@@ -64,19 +64,23 @@ internal sealed class SearchBox
 
     private static Texture2D? _iconTexture;
 
-    private static Texture2D? _clearTexture;
+    /// <summary>The game's ×, drawn as its own node: shown while there is text to clear.</summary>
+    private TextureRect? _clearButton;
 
     private const float IconSize = 30;
 
     private const float IconPad = 10;
 
     /// <summary>Lifts the icon off dead centre so it lines up with the text.</summary>
-    private const float IconRaise = 3;
+    private const float IconRaise = 2;
 
     /// <summary>The same × the game's Card Library search bar uses.</summary>
     private const string ClearIconPath = "res://images/atlases/compressed.sprites/back_button_x.tres";
 
-    private const int ClearSize = 26;
+    private const float ClearSize = 26;
+
+    /// <summary>Space between the × and the icon.</summary>
+    private const float ClearGap = 6;
 
     private const string Placeholder = "Search...";
 
@@ -216,7 +220,6 @@ internal sealed class SearchBox
         _input = new LineEdit
         {
             Name = "Input",
-            ClearButtonEnabled = true,
         };
         _input.TextChanged += OnQueryChanged;
         _input.TextSubmitted += _ => _input.ReleaseFocus();
@@ -244,7 +247,7 @@ internal sealed class SearchBox
 
         _root.Name = "DeckSearch";
         style.ApplyTo(_input);
-        SetClearIcon(_input);
+        _input.TextChanged += _ => ApplyFocusState();
         _input.FocusEntered += ApplyFocusState;
         _input.FocusExited += ApplyFocusState;
         ApplyFocusState();
@@ -326,9 +329,16 @@ internal sealed class SearchBox
             // Under the input, so clicks on the icon still land in the text box.
             box.AddChild(_icon);
             box.MoveChild(_icon, input.GetIndex());
-            box.Resized += ApplyFocusState;
         }
 
+        _clearButton = CreateClearButton();
+        if (_clearButton != null)
+        {
+            // Above the input, so it gets the click rather than the text box.
+            box.AddChild(_clearButton);
+        }
+
+        box.Resized += ApplyFocusState;
         return box;
     }
 
@@ -397,34 +407,58 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// The game's search bars draw their own × (NClearSearchButton with back_button_x), and its
-    /// theme gives LineEdit's built-in clear button no icon, so ours was invisible. Give it the
-    /// game's ×, at a fixed size because LineEdit draws the icon at the texture's own size.
+    /// The game's search bars draw their own × (NClearSearchButton: a TextureRect showing
+    /// back_button_x), and its theme gives LineEdit's built-in clear button no icon. Copying the
+    /// × into LineEdit's icon slot needs its pixels, and reading them back out of the packed
+    /// sprite atlas came out blank: it clicked but never drew. So do what the game does: a
+    /// TextureRect scaled by the GPU, with its own click handling.
     /// </summary>
-    private static void SetClearIcon(LineEdit input)
+    private TextureRect? CreateClearButton()
     {
         try
         {
-            if (_clearTexture == null)
+            var texture = ResourceLoader.Load<Texture2D>(ClearIconPath);
+            if (texture == null)
             {
-                var source = ResourceLoader.Load<Texture2D>(ClearIconPath);
-                if (source == null)
-                {
-                    Log.Warn($"[DeckSearch] {ClearIconPath} not found, the clear button will be missing.");
-                    return;
-                }
-
-                _clearTexture = Resample(source, ClearSize, mipmaps: false) ?? source;
+                Log.Warn($"[DeckSearch] {ClearIconPath} not found, there will be no clear button.");
+                return null;
             }
 
-            input.AddThemeIconOverride("clear", _clearTexture);
-            input.AddThemeColorOverride("clear_button_color", Colors.White);
-            input.AddThemeColorOverride("clear_button_color_pressed", new Color(0.8f, 0.8f, 0.8f));
+            var button = new TextureRect
+            {
+                Name = "Clear",
+                Texture = texture,
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                TextureFilter = CanvasItem.TextureFilterEnum.Linear,
+                MouseFilter = Control.MouseFilterEnum.Stop,
+                MouseDefaultCursorShape = Control.CursorShape.PointingHand,
+                Size = new Vector2(ClearSize, ClearSize),
+                PivotOffset = new Vector2(ClearSize / 2, ClearSize / 2),
+                Visible = false,
+            };
+            button.GuiInput += OnClearGuiInput;
+            button.MouseEntered += () => button.Scale = new Vector2(1.1f, 1.1f);
+            button.MouseExited += () => button.Scale = Vector2.One;
+            return button;
         }
         catch (Exception ex)
         {
-            Log.Warn($"[DeckSearch] Could not set the clear button icon: {ex.Message}");
+            Log.Warn($"[DeckSearch] Could not create the clear button: {ex.Message}");
+            return null;
         }
+    }
+
+    private void OnClearGuiInput(InputEvent inputEvent)
+    {
+        if (inputEvent is not InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left })
+        {
+            return;
+        }
+
+        ClearQuery();
+        _input?.GrabFocus();
+        _clearButton?.AcceptEvent();
     }
 
     /// <summary>A copy of the texture scaled to fit size x size (keeping its shape), or null.</summary>
@@ -469,14 +503,34 @@ internal sealed class SearchBox
         bool focused = _input.HasFocus();
         _input.PlaceholderText = focused ? "" : Placeholder;
 
-        if (_icon == null || _root == null)
+        if (_root == null || _root == _input)
         {
             SetInputMargins(16, 8);
             return;
         }
 
-        SetInputMargins(16, IconSize + (IconPad * 2));
-        _icon.Position = new Vector2(_root.Size.X - IconPad - IconSize, ((_root.Size.Y - IconSize) / 2) - IconRaise);
+        // Right to left: the icon, then the × while there is text, then the text itself.
+        float right = _root.Size.X - IconPad;
+        if (_icon != null)
+        {
+            right -= IconSize;
+            _icon.Position = new Vector2(right, ((_root.Size.Y - IconSize) / 2) - IconRaise);
+            right -= ClearGap;
+        }
+
+        bool showClear = _clearButton != null && _input.Text.Length > 0;
+        if (_clearButton != null)
+        {
+            _clearButton.Visible = showClear;
+            _clearButton.Position = new Vector2(right - ClearSize, (_root.Size.Y - ClearSize) / 2);
+        }
+
+        if (showClear)
+        {
+            right -= ClearSize + ClearGap;
+        }
+
+        SetInputMargins(16, Math.Max(8, _root.Size.X - right));
     }
 
     private void SetInputMargins(float left, float right)
@@ -590,6 +644,7 @@ internal sealed class SearchBox
             // Setting Text in code does not raise TextChanged, so pass the change on ourselves.
             _input.Clear();
             OnQueryChanged("");
+            ApplyFocusState();
         }
     }
 
