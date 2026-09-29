@@ -64,8 +64,8 @@ internal sealed class SearchBox
 
     private static Texture2D? _iconTexture;
 
-    /// <summary>The game's ×, drawn as its own node: shown while there is text to clear.</summary>
-    private TextureRect? _clearButton;
+    /// <summary>A × drawn as its own node: shown while there is text to clear.</summary>
+    private Label? _clearButton;
 
     private const float IconSize = 30;
 
@@ -74,10 +74,13 @@ internal sealed class SearchBox
     /// <summary>Lifts the icon off dead centre so it lines up with the text.</summary>
     private const float IconRaise = 2;
 
-    /// <summary>The same × the game's Card Library search bar uses.</summary>
-    private const string ClearIconPath = "res://images/atlases/compressed.sprites/back_button_x.tres";
-
+    /// <summary>Width of the × and its font size.</summary>
     private const float ClearSize = 26;
+
+    private const int ClearFontSize = 34;
+
+    /// <summary>Lifts the × glyph, which sits low in the font, level with the text and icon.</summary>
+    private const float ClearRaise = 3;
 
     /// <summary>Space between the × and the icon.</summary>
     private const float ClearGap = 6;
@@ -233,7 +236,7 @@ internal sealed class SearchBox
 
         if (sorter != null && _sortRow != null)
         {
-            _root = CreateThemedBox(sorter, _input, config);
+            _root = CreateThemedBox(sorter, _input, config, style);
             FitSortRow(_sortRow, config);
             _sortRow.AddChildSafely(_root);
         }
@@ -283,7 +286,7 @@ internal sealed class SearchBox
     /// already tinted the buttons for the character (NDeckViewScreen._Ready calls SetHue before
     /// our postfix), so the copy arrives in the right colour for whoever is being played.
     /// </summary>
-    private Control CreateThemedBox(Control sorter, LineEdit input, SearchConfig config)
+    private Control CreateThemedBox(Control sorter, LineEdit input, SearchConfig config, TextStyle style)
     {
         float height = sorter.CustomMinimumSize.Y > 0 ? sorter.CustomMinimumSize.Y : 42;
         var box = new Control
@@ -331,7 +334,7 @@ internal sealed class SearchBox
             box.MoveChild(_icon, input.GetIndex());
         }
 
-        _clearButton = CreateClearButton();
+        _clearButton = CreateClearButton(style);
         if (_clearButton != null)
         {
             // Above the input, so it gets the click rather than the text box.
@@ -407,38 +410,32 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// The game's search bars draw their own × (NClearSearchButton: a TextureRect showing
-    /// back_button_x), and its theme gives LineEdit's built-in clear button no icon. Copying the
-    /// × into LineEdit's icon slot needs its pixels, and reading them back out of the packed
-    /// sprite atlas came out blank: it clicked but never drew. So do what the game does: a
-    /// TextureRect scaled by the GPU, with its own click handling.
+    /// The × is a glyph in the box's own font: the game's red (StsColors.red, its [red] text colour)
+    /// with the same soft dark outline as the gold text, so it reads as part of the theme.
+    ///
+    /// Two dead ends first. LineEdit's built-in clear button has no icon in the game theme, and
+    /// copying the game's back_button_x sprite into that slot came out blank, because reading pixels
+    /// back out of the packed atlas fails. Drawing that sprite as a TextureRect worked but looked
+    /// sharp and out of place.
     /// </summary>
-    private TextureRect? CreateClearButton()
+    private Label? CreateClearButton(TextStyle style)
     {
         try
         {
-            var texture = ResourceLoader.Load<Texture2D>(ClearIconPath);
-            if (texture == null)
-            {
-                Log.Warn($"[DeckSearch] {ClearIconPath} not found, there will be no clear button.");
-                return null;
-            }
-
-            var button = new TextureRect
+            var button = new Label
             {
                 Name = "Clear",
-                Texture = texture,
-                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
-                TextureFilter = CanvasItem.TextureFilterEnum.Linear,
+                Text = "×",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
                 MouseFilter = Control.MouseFilterEnum.Stop,
                 MouseDefaultCursorShape = Control.CursorShape.PointingHand,
-                Size = new Vector2(ClearSize, ClearSize),
-                PivotOffset = new Vector2(ClearSize / 2, ClearSize / 2),
                 Visible = false,
             };
+            style.ApplyTo(button, ClearFontSize);
+            button.AddThemeColorOverride("font_color", StsColors.red);
             button.GuiInput += OnClearGuiInput;
-            button.MouseEntered += () => button.Scale = new Vector2(1.1f, 1.1f);
+            button.MouseEntered += () => button.Scale = new Vector2(1.15f, 1.15f);
             button.MouseExited += () => button.Scale = Vector2.One;
             return button;
         }
@@ -522,7 +519,12 @@ internal sealed class SearchBox
         if (_clearButton != null)
         {
             _clearButton.Visible = showClear;
-            _clearButton.Position = new Vector2(right - ClearSize, (_root.Size.Y - ClearSize) / 2);
+            // Full height with the glyph centred by the label, then lifted a touch.
+            // Centred on its slot even if the outlined glyph needs more than ClearSize.
+            float width = Math.Max(ClearSize, _clearButton.GetCombinedMinimumSize().X);
+            _clearButton.Position = new Vector2(right - (ClearSize / 2) - (width / 2), -ClearRaise);
+            _clearButton.Size = new Vector2(width, _root.Size.Y);
+            _clearButton.PivotOffset = _clearButton.Size / 2;
         }
 
         if (showClear)
