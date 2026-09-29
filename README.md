@@ -3,6 +3,9 @@
 A Slay the Spire 2 mod that adds a search box to the **Deck** screen. Some daily modifiers leave
 you with a huge deck. Type part of a card's name and only the matching cards stay on screen.
 
+The box sits on the sort bar next to the sort buttons and matches their style. It takes on your
+character's colour.
+
 - **Fuzzy:** typos are forgiven (`defelct` finds Deflect), and initials work (`pstr` finds
   Perfected Strike).
 - **Card text too:** `exhaust` or `block` find cards by what they do. Name matches still count
