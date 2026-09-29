@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Screens;
@@ -57,6 +58,15 @@ internal sealed class SearchBox
     private Tween? _shadeTween;
 
     private bool _hovered;
+
+    /// <summary>The magnifying-glass icon: left while idle, right end while typing.</summary>
+    private TextureRect? _icon;
+
+    private Tween? _iconTween;
+
+    private const float IconSize = 30;
+
+    private const float IconPad = 10;
 
     private string _query = "";
 
@@ -194,7 +204,6 @@ internal sealed class SearchBox
         _input = new LineEdit
         {
             Name = "Input",
-            PlaceholderText = "Search deck…",
             ClearButtonEnabled = true,
         };
         _input.TextChanged += OnQueryChanged;
@@ -223,6 +232,7 @@ internal sealed class SearchBox
 
         _root.Name = "DeckSearch";
         style.ApplyTo(_input);
+        UpdateIcon(animate: false);
 
         _emptyLabel = new Label
         {
@@ -294,6 +304,18 @@ internal sealed class SearchBox
         input.MouseExited += () => SetHovered(false);
         input.FocusEntered += UpdateShade;
         input.FocusExited += UpdateShade;
+
+        _icon = CreateIcon();
+        if (_icon != null)
+        {
+            // Under the input, so clicks on the icon still land in the text box.
+            box.AddChild(_icon);
+            box.MoveChild(_icon, input.GetIndex());
+            input.FocusEntered += () => UpdateIcon(animate: true);
+            input.FocusExited += () => UpdateIcon(animate: true);
+            box.Resized += () => UpdateIcon(animate: false);
+        }
+
         return box;
     }
 
@@ -317,6 +339,88 @@ internal sealed class SearchBox
             {
                 image.PivotOffset = new Vector2(width / 2, image.PivotOffset.Y);
             }
+        }
+    }
+
+    /// <summary>
+    /// The icon of Withering Presence (the Aeonglass boss power), which reads as a magnifying
+    /// glass. Taken from the power model, so a game update that moves the file still finds it.
+    /// </summary>
+    private static TextureRect? CreateIcon()
+    {
+        try
+        {
+            PowerModel power = ModelDb.Power<WitheringPresencePower>();
+            Texture2D? texture = ResourceLoader.Load<Texture2D>(power.ResolvedBigIconPath) ?? power.Icon;
+            if (texture == null)
+            {
+                return null;
+            }
+
+            return new TextureRect
+            {
+                Name = "Icon",
+                Texture = texture,
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                Size = new Vector2(IconSize, IconSize),
+            };
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] No search icon ({ex.Message}), the box will have none.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Idle: icon at the left, text after it. Focused: the icon slides to the right end and the
+    /// text gets the left side. The right margin keeps the clear button just left of the icon.
+    /// </summary>
+    private void UpdateIcon(bool animate)
+    {
+        if (_input == null)
+        {
+            return;
+        }
+
+        if (_icon == null || _root == null)
+        {
+            SetInputMargins(16, 8);
+            return;
+        }
+
+        bool focused = _input.HasFocus();
+        float reserved = IconSize + (IconPad * 2);
+        SetInputMargins(focused ? 16 : reserved, focused ? reserved : 8);
+
+        var target = new Vector2(
+            focused ? _root.Size.X - IconPad - IconSize : IconPad,
+            (_root.Size.Y - IconSize) / 2);
+        _iconTween?.Kill();
+        if (animate && _root.IsInsideTree())
+        {
+            _iconTween = _root.CreateTween();
+            _iconTween.TweenProperty(_icon, "position", target, 0.35).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Expo);
+        }
+        else
+        {
+            _icon.Position = target;
+        }
+    }
+
+    private void SetInputMargins(float left, float right)
+    {
+        if (_input == null)
+        {
+            return;
+        }
+
+        // No box of its own: the copied button image is the background.
+        foreach (string name in new[] { "normal", "focus", "read_only" })
+        {
+            _input.AddThemeStyleboxOverride(name, new StyleBoxEmpty { ContentMarginLeft = left, ContentMarginRight = right });
         }
     }
 
@@ -364,18 +468,11 @@ internal sealed class SearchBox
         public void ApplyTo(LineEdit input)
         {
             ApplyCommon(input, FontSize);
-            input.AddThemeColorOverride("font_placeholder_color", new Color(Color, 0.55f));
             input.AddThemeColorOverride("caret_color", Color);
             input.AddThemeColorOverride("selection_color", new Color(Color, 0.35f));
             input.AddThemeColorOverride("font_selected_color", Colors.White);
             input.AddThemeColorOverride("clear_button_color", Color);
             input.AddThemeColorOverride("clear_button_color_pressed", Colors.White);
-
-            // No box of its own: the copied button image is the background.
-            foreach (string name in new[] { "normal", "focus", "read_only" })
-            {
-                input.AddThemeStyleboxOverride(name, new StyleBoxEmpty { ContentMarginLeft = 16, ContentMarginRight = 8 });
-            }
         }
 
         public void ApplyTo(Label label, int fontSize) => ApplyCommon(label, fontSize);
