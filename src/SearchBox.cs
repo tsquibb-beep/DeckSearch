@@ -80,7 +80,7 @@ internal sealed class SearchBox
     private const int ClearFontSize = 34;
 
     /// <summary>Lifts the × glyph, which sits low in the font, level with the text and icon.</summary>
-    private const float ClearRaise = 3;
+    private const float ClearRaise = 2;
 
     /// <summary>Space between the × and the icon.</summary>
     private const float ClearGap = 6;
