@@ -6,7 +6,6 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Godot;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
@@ -28,11 +27,14 @@ internal sealed class SearchBox
 
     private static readonly MethodInfo? DisplayCardsMethod = AccessTools.Method(typeof(NDeckViewScreen), "DisplayCards");
 
-    private static PackedScene? _gameBarScene;
+    private static readonly StringName SaturationParam = "s";
 
-    private static bool _lookedForGameBar;
+    private static readonly StringName ValueParam = "v";
 
-    private static string _gameBarInfo = "not looked up yet";
+    /// <summary>The sort buttons' resting and hovered shader brightness (NCardViewSortButton).</summary>
+    private const float RestShade = 0.8f;
+
+    private const float LitShade = 1f;
 
     /// <summary>The most recently opened box, for the console command.</summary>
     private static WeakReference<SearchBox>? _latest;
@@ -46,6 +48,15 @@ internal sealed class SearchBox
     private LineEdit? _input;
 
     private Label? _emptyLabel;
+
+    /// <summary>The row holding the game's sort buttons, when the box sits in it.</summary>
+    private HBoxContainer? _sortRow;
+
+    private ShaderMaterial? _hsv;
+
+    private Tween? _shadeTween;
+
+    private bool _hovered;
 
     private string _query = "";
 
@@ -180,33 +191,38 @@ internal sealed class SearchBox
     {
         SearchConfig config = SearchConfig.Current;
 
-        _root = config.UseGameSearchBar ? CreateGameSearchBar() : null;
-        if (_root is NSearchBar bar)
+        _input = new LineEdit
         {
-            _input = bar.GetNodeOrNull<LineEdit>("TextArea");
-            // The clear button sets the text directly and only raises QueryChanged, not TextChanged.
-            bar.Connect(NSearchBar.SignalName.QueryChanged, Callable.From<string>(OnQueryChanged));
-        }
-
-        if (_input == null)
-        {
-            _root?.QueueFree();
-            _input = new LineEdit
-            {
-                Name = "DeckSearchInput",
-                PlaceholderText = "Search deck…",
-                ClearButtonEnabled = true,
-                CustomMinimumSize = new Vector2(360, 56),
-            };
-            _input.AddThemeFontSizeOverride("font_size", 28);
-            _input.TextChanged += OnQueryChanged;
-            _root = _input;
-        }
-
-        // Either the game bar with its TextArea, or the plain box, which is its own root.
-        _root!.Name = "DeckSearch";
+            Name = "Input",
+            PlaceholderText = "Search deck…",
+            ClearButtonEnabled = true,
+        };
+        _input.TextChanged += OnQueryChanged;
         _input.TextSubmitted += _ => _input.ReleaseFocus();
         _input.GuiInput += OnInputGuiInput;
+
+        // The sort buttons live in an HBoxContainer inside the grid's scroll area, so joining that
+        // row puts the box on the bar, lets the row lay it out, and scrolls it with the cards.
+        Control? sorter = _screen.GetNodeOrNull<Control>("%ObtainedSorter");
+        _sortRow = sorter?.GetParent() as HBoxContainer;
+        TextStyle style = TextStyle.From(sorter);
+
+        if (sorter != null && _sortRow != null)
+        {
+            _root = CreateThemedBox(sorter, _input, config);
+            FitSortRow(_sortRow, config);
+            _sortRow.AddChildSafely(_root);
+        }
+        else
+        {
+            Log.Warn("[DeckSearch] Sort button row not found (game layout changed?), placing a plain box instead.");
+            _input.CustomMinimumSize = new Vector2(config.SearchWidth, 48);
+            _root = _input;
+            _screen.AddChildSafely(_root);
+        }
+
+        _root.Name = "DeckSearch";
+        style.ApplyTo(_input);
 
         _emptyLabel = new Label
         {
@@ -216,9 +232,8 @@ internal sealed class SearchBox
             Visible = false,
             MouseFilter = Control.MouseFilterEnum.Ignore,
         };
-        _emptyLabel.AddThemeFontSizeOverride("font_size", 36);
+        style.ApplyTo(_emptyLabel, fontSize: 32);
 
-        _screen.AddChildSafely(_root);
         _screen.AddChildSafely(_emptyLabel);
         _screen.AddChildSafely(CreateShortcutButton(config));
 
@@ -233,6 +248,150 @@ internal sealed class SearchBox
                 _input.GrabFocus();
             }
         }).CallDeferred();
+    }
+
+    /// <summary>
+    /// A sort button's background, copied with its own copy of the hue shader. The screen has
+    /// already tinted the buttons for the character (NDeckViewScreen._Ready calls SetHue before
+    /// our postfix), so the copy arrives in the right colour for whoever is being played.
+    /// </summary>
+    private Control CreateThemedBox(Control sorter, LineEdit input, SearchConfig config)
+    {
+        float height = sorter.CustomMinimumSize.Y > 0 ? sorter.CustomMinimumSize.Y : 42;
+        var box = new Control
+        {
+            CustomMinimumSize = new Vector2(config.SearchWidth, height),
+            MouseFilter = Control.MouseFilterEnum.Pass,
+        };
+
+        if (sorter.GetNodeOrNull<TextureRect>("%ButtonImage") is { } image)
+        {
+            var background = (TextureRect)image.Duplicate();
+            background.Name = "Background";
+            background.MouseFilter = Control.MouseFilterEnum.Ignore;
+            background.Scale = Vector2.One;
+            if (image.Material is ShaderMaterial material)
+            {
+                _hsv = (ShaderMaterial)material.Duplicate();
+                _hsv.SetShaderParameter(SaturationParam, RestShade);
+                _hsv.SetShaderParameter(ValueParam, RestShade);
+                background.Material = _hsv;
+            }
+
+            box.AddChild(background);
+            background.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        }
+        else
+        {
+            Log.Warn("[DeckSearch] Sort button has no %ButtonImage, the search box will be unstyled.");
+        }
+
+        box.AddChild(input);
+        input.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+
+        // Brighten on hover and while typing, as the sort buttons do on hover.
+        input.MouseEntered += () => SetHovered(true);
+        input.MouseExited += () => SetHovered(false);
+        input.FocusEntered += UpdateShade;
+        input.FocusExited += UpdateShade;
+        return box;
+    }
+
+    /// <summary>
+    /// Narrows the sort buttons to what their labels need (or sortButtonWidth, whichever is
+    /// wider) and tightens the gaps, to make room for the box. Measuring the labels keeps longer
+    /// translations from spilling out of their buttons.
+    /// </summary>
+    private static void FitSortRow(HBoxContainer row, SearchConfig config)
+    {
+        row.AddThemeConstantOverride("separation", config.SortButtonSpacing);
+        foreach (Control button in row.GetChildren().OfType<NCardViewSortButton>())
+        {
+            // The label row starts 8px in (deck_view_sort_button.tscn); leave room on both sides.
+            float content = button.GetNodeOrNull<Control>("HBoxContainer")?.GetCombinedMinimumSize().X ?? 0;
+            float width = Math.Max(config.SortButtonWidth, content + 24);
+            button.CustomMinimumSize = new Vector2(width, button.CustomMinimumSize.Y);
+
+            // The button scales its image from a pivot set for the original 256px width.
+            if (button.GetNodeOrNull<Control>("%ButtonImage") is { } image)
+            {
+                image.PivotOffset = new Vector2(width / 2, image.PivotOffset.Y);
+            }
+        }
+    }
+
+    private void SetHovered(bool hovered)
+    {
+        _hovered = hovered;
+        UpdateShade();
+    }
+
+    private void UpdateShade()
+    {
+        if (_hsv == null || _root == null || _input == null || !_root.IsInsideTree())
+        {
+            return;
+        }
+
+        float target = _hovered || _input.HasFocus() ? LitShade : RestShade;
+        _shadeTween?.Kill();
+        _shadeTween = _root.CreateTween().SetParallel();
+        _shadeTween.TweenProperty(_hsv, "shader_parameter/s", target, 0.5).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Expo);
+        _shadeTween.TweenProperty(_hsv, "shader_parameter/v", target, 0.5).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Expo);
+    }
+
+    /// <summary>The sort buttons' label look: gold Kreon with a soft black outline.</summary>
+    private readonly record struct TextStyle(Font? Font, int FontSize, Color Color, Color Outline, int OutlineSize)
+    {
+        // Fallbacks copied from deck_view_sort_button.tscn, used only if the label is missing.
+        private static readonly TextStyle Default = new(null, 22, new Color(0.937f, 0.784f, 0.318f), new Color(0, 0, 0, 0.5f), 12);
+
+        public static TextStyle From(Control? sorter)
+        {
+            if (sorter?.GetNodeOrNull<Control>("%Label") is not { } label)
+            {
+                return Default;
+            }
+
+            return new TextStyle(
+                label.GetThemeFont("font"),
+                label.GetThemeFontSize("font_size"),
+                label.GetThemeColor("font_color"),
+                label.GetThemeColor("font_outline_color"),
+                label.GetThemeConstant("outline_size"));
+        }
+
+        public void ApplyTo(LineEdit input)
+        {
+            ApplyCommon(input, FontSize);
+            input.AddThemeColorOverride("font_placeholder_color", new Color(Color, 0.55f));
+            input.AddThemeColorOverride("caret_color", Color);
+            input.AddThemeColorOverride("selection_color", new Color(Color, 0.35f));
+            input.AddThemeColorOverride("font_selected_color", Colors.White);
+            input.AddThemeColorOverride("clear_button_color", Color);
+            input.AddThemeColorOverride("clear_button_color_pressed", Colors.White);
+
+            // No box of its own: the copied button image is the background.
+            foreach (string name in new[] { "normal", "focus", "read_only" })
+            {
+                input.AddThemeStyleboxOverride(name, new StyleBoxEmpty { ContentMarginLeft = 16, ContentMarginRight = 8 });
+            }
+        }
+
+        public void ApplyTo(Label label, int fontSize) => ApplyCommon(label, fontSize);
+
+        private void ApplyCommon(Control control, int fontSize)
+        {
+            if (Font != null)
+            {
+                control.AddThemeFontOverride("font", Font);
+            }
+
+            control.AddThemeFontSizeOverride("font_size", fontSize);
+            control.AddThemeColorOverride("font_color", Color);
+            control.AddThemeColorOverride("font_outline_color", Outline);
+            control.AddThemeConstantOverride("outline_size", OutlineSize);
+        }
     }
 
     /// <summary>
@@ -260,12 +419,9 @@ internal sealed class SearchBox
 
     private void ClearQuery()
     {
-        if (_root is NSearchBar bar)
+        if (_input != null)
         {
-            bar.ClearText();
-        }
-        else if (_input != null)
-        {
+            // Setting Text in code does not raise TextChanged, so pass the change on ourselves.
             _input.Clear();
             OnQueryChanged("");
         }
@@ -368,8 +524,9 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// Beside the sort buttons, measured from the game's own nodes. If there is no room to the
-    /// right it drops underneath them instead.
+    /// In the sort row, the row does the layout; this only shrinks the box if the row would
+    /// overflow the bar, and puts the "no matches" label under the bar. Without the row (the
+    /// fallback), the box goes to the top right of the screen.
     /// </summary>
     private void Place()
     {
@@ -378,38 +535,31 @@ internal sealed class SearchBox
             return;
         }
 
-        SearchConfig config = SearchConfig.Current;
-        Vector2 size = _root.Size;
-        if (config.Width > 0)
-        {
-            size.X = config.Width;
-        }
-
-        size.X = Math.Max(size.X, 300);
-        size.Y = Math.Max(size.Y, 48);
-
         Transform2D toLocal = _screen.GetGlobalTransform().AffineInverse();
         Vector2 screenSize = _screen.Size;
-        Vector2 position = new(screenSize.X - size.X - 40, 20);
+        float barBottom = 160;
 
-        Control? sortBg = _screen.GetNodeOrNull<Control>("%SortingBg");
-        if (sortBg != null)
+        if (_sortRow != null && _sortRow.GetParent() is Control bar)
         {
-            Rect2 sortRect = sortBg.GetGlobalRect();
-            Vector2 topLeft = toLocal * sortRect.Position;
-            Vector2 bottomRight = toLocal * sortRect.End;
-            float middle = (topLeft.Y + bottomRight.Y) / 2;
-            position = bottomRight.X + 24 + size.X <= screenSize.X
-                ? new Vector2(bottomRight.X + 24, middle - (size.Y / 2))
-                : new Vector2(topLeft.X, bottomRight.Y + 12);
-        }
+            float overflow = _sortRow.GetCombinedMinimumSize().X - (bar.Size.X - 40);
+            if (overflow > 0)
+            {
+                _root.CustomMinimumSize = new Vector2(Math.Max(160, _root.CustomMinimumSize.X - overflow), _root.CustomMinimumSize.Y);
+            }
 
-        _root.Position = position + new Vector2(config.OffsetX, config.OffsetY);
-        _root.Size = size;
+            barBottom = (toLocal * bar.GetGlobalRect().End).Y;
+        }
+        else
+        {
+            Vector2 size = _root.GetCombinedMinimumSize();
+            _root.Position = new Vector2(screenSize.X - size.X - 220, 110);
+            _root.Size = size;
+            barBottom = _root.Position.Y + size.Y;
+        }
 
         if (_emptyLabel != null)
         {
-            _emptyLabel.Position = new Vector2(0, position.Y + size.Y + 160);
+            _emptyLabel.Position = new Vector2(0, barBottom + 120);
             _emptyLabel.Size = new Vector2(screenSize.X, 60);
         }
     }
@@ -478,85 +628,22 @@ internal sealed class SearchBox
         _controllerSignals.Clear();
     }
 
-    // ---------------------------------------------------------------- game search bar
-
-    /// <summary>
-    /// The Card Library's search bar, if it is its own sub-scene. Read from the library scene's
-    /// packed state without instancing the library itself.
-    /// </summary>
-    private static Control? CreateGameSearchBar()
-    {
-        if (!_lookedForGameBar)
-        {
-            _lookedForGameBar = true;
-            _gameBarScene = FindGameSearchBarScene(out _gameBarInfo);
-            Log.Info($"[DeckSearch] Game search bar: {_gameBarInfo}");
-        }
-
-        if (_gameBarScene == null)
-        {
-            return null;
-        }
-
-        try
-        {
-            return _gameBarScene.Instantiate<Control>();
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[DeckSearch] Could not instance the game search bar, using a plain box: {ex.Message}");
-            _gameBarScene = null;
-            _gameBarInfo = $"instancing failed: {ex.Message}";
-            return null;
-        }
-    }
-
-    private static PackedScene? FindGameSearchBarScene(out string info)
-    {
-        try
-        {
-            string path = SceneHelper.GetScenePath("screens/card_library/card_library");
-            PackedScene? library = PreloadManager.Cache.ContainsKey(path)
-                ? PreloadManager.Cache.GetScene(path)
-                : ResourceLoader.Load<PackedScene>(path);
-            if (library == null)
-            {
-                info = $"could not load {path}";
-                return null;
-            }
-
-            SceneState state = library.GetState();
-            for (int i = 0; i < state.GetNodeCount(); i++)
-            {
-                if (state.GetNodeName(i) != "SearchBar")
-                {
-                    continue;
-                }
-
-                PackedScene? instance = state.GetNodeInstance(i);
-                info = instance != null
-                    ? $"using {instance.ResourcePath}"
-                    : "SearchBar is built inline in the library scene, using a plain box";
-                return instance;
-            }
-
-            info = "no SearchBar node in the library scene, using a plain box";
-            return null;
-        }
-        catch (Exception ex)
-        {
-            info = $"lookup failed ({ex.Message}), using a plain box";
-            return null;
-        }
-    }
-
     // ---------------------------------------------------------------- console
 
     public string Diagnostics()
     {
         var text = new StringBuilder();
-        text.AppendLine($"Game search bar: {_gameBarInfo}");
-        text.AppendLine($"Box: {_root?.GetType().Name} at {_root?.Position} size {_root?.Size} visible={_root?.Visible}");
+        text.AppendLine($"Box: {(_sortRow != null ? "in the sort row" : "fallback, on the screen")} at {_root?.GetGlobalRect()} visible={_root?.Visible} themed={_hsv != null}");
+        if (_sortRow != null)
+        {
+            text.AppendLine($"Sort row: {_sortRow.GetGlobalRect()} separation={_sortRow.GetThemeConstant("separation")}");
+            foreach (Node child in _sortRow.GetChildren())
+            {
+                string rect = child is Control control ? $" {control.GetGlobalRect()} min={control.CustomMinimumSize}" : "";
+                text.AppendLine($"  {child.Name}{rect}");
+            }
+        }
+
         text.AppendLine($"Query: '{_query}' showing {_shown}/{_total}");
         text.AppendLine($"Screen: {_screen.GetGlobalRect()}");
         foreach (Node child in _screen.GetChildren())

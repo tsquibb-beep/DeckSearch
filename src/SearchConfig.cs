@@ -38,22 +38,20 @@ internal sealed class SearchConfig
     [JsonPropertyName("focusShortcuts")]
     public List<string> FocusShortcuts { get; set; } = new() { "Ctrl+F" };
 
+    /// <summary>Width of the search box on the sort bar, in pixels.</summary>
+    [JsonPropertyName("searchWidth")]
+    public float SearchWidth { get; set; } = 340;
+
     /// <summary>
-    /// Use the Card Library's own search bar scene for the look. false forces a plain text box.
+    /// The sort buttons are narrowed to this width (the game uses 250) to make room for the box.
+    /// A button never goes narrower than its label needs.
     /// </summary>
-    [JsonPropertyName("useGameSearchBar")]
-    public bool UseGameSearchBar { get; set; } = true;
+    [JsonPropertyName("sortButtonWidth")]
+    public float SortButtonWidth { get; set; } = 190;
 
-    /// <summary>Width of the box in pixels. 0 keeps the game search bar's own width.</summary>
-    [JsonPropertyName("width")]
-    public float Width { get; set; } = 0;
-
-    /// <summary>Nudges the box from its default spot beside the sort buttons.</summary>
-    [JsonPropertyName("offsetX")]
-    public float OffsetX { get; set; } = 0;
-
-    [JsonPropertyName("offsetY")]
-    public float OffsetY { get; set; } = 0;
+    /// <summary>Gap between the sort buttons and the box (the game uses 50).</summary>
+    [JsonPropertyName("sortButtonSpacing")]
+    public int SortButtonSpacing { get; set; } = 30;
 
     private static SearchConfig? _current;
 

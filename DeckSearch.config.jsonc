@@ -24,11 +24,9 @@
     // e.g. "Ctrl+F", "Slash", "Shift+S".
     "focusShortcuts": ["Ctrl+F"],
 
-    // Use the Card Library's own search bar for the look. false = a plain text box.
-    "useGameSearchBar": true,
-
-    // Box width in pixels (0 = the search bar's own width), and a nudge from its default spot.
-    "width": 0,
-    "offsetX": 0,
-    "offsetY": 0
+    // The box sits on the sort bar. Its width, and how narrow the sort buttons become to make
+    // room (a button never gets narrower than its label). The game's own sizes are 250 and 50.
+    "searchWidth": 340,
+    "sortButtonWidth": 190,
+    "sortButtonSpacing": 30
 }
