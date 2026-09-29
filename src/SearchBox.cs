@@ -59,14 +59,26 @@ internal sealed class SearchBox
 
     private bool _hovered;
 
-    /// <summary>The magnifying-glass icon: left while idle, right end while typing.</summary>
+    /// <summary>The magnifying-glass icon, fixed at the right end of the box.</summary>
     private TextureRect? _icon;
 
-    private Tween? _iconTween;
+    private static Texture2D? _iconTexture;
+
+    private static Texture2D? _clearTexture;
 
     private const float IconSize = 30;
 
     private const float IconPad = 10;
+
+    /// <summary>Lifts the icon off dead centre so it lines up with the text.</summary>
+    private const float IconRaise = 3;
+
+    /// <summary>The same × the game's Card Library search bar uses.</summary>
+    private const string ClearIconPath = "res://images/atlases/compressed.sprites/back_button_x.tres";
+
+    private const int ClearSize = 26;
+
+    private const string Placeholder = "Search...";
 
     private string _query = "";
 
@@ -232,7 +244,10 @@ internal sealed class SearchBox
 
         _root.Name = "DeckSearch";
         style.ApplyTo(_input);
-        UpdateIcon(animate: false);
+        SetClearIcon(_input);
+        _input.FocusEntered += ApplyFocusState;
+        _input.FocusExited += ApplyFocusState;
+        ApplyFocusState();
 
         _emptyLabel = new Label
         {
@@ -311,9 +326,7 @@ internal sealed class SearchBox
             // Under the input, so clicks on the icon still land in the text box.
             box.AddChild(_icon);
             box.MoveChild(_icon, input.GetIndex());
-            input.FocusEntered += () => UpdateIcon(animate: true);
-            input.FocusExited += () => UpdateIcon(animate: true);
-            box.Resized += () => UpdateIcon(animate: false);
+            box.Resized += ApplyFocusState;
         }
 
         return box;
@@ -350,19 +363,28 @@ internal sealed class SearchBox
     {
         try
         {
-            PowerModel power = ModelDb.Power<WitheringPresencePower>();
-            Texture2D? texture = ResourceLoader.Load<Texture2D>(power.ResolvedBigIconPath) ?? power.Icon;
-            if (texture == null)
+            if (_iconTexture == null)
             {
-                return null;
+                PowerModel power = ModelDb.Power<WitheringPresencePower>();
+                Texture2D? source = ResourceLoader.Load<Texture2D>(power.ResolvedBigIconPath) ?? power.Icon;
+                if (source == null)
+                {
+                    return null;
+                }
+
+                // Drawn straight from the big icon, the GPU squeezes it about 8x with no mipmaps,
+                // which looks harsh. Pre-shrinking at twice the display size with a good filter,
+                // plus mipmaps, softens it and still leaves detail for higher resolutions.
+                _iconTexture = Resample(source, (int)IconSize * 2, mipmaps: true) ?? source;
             }
 
             return new TextureRect
             {
                 Name = "Icon",
-                Texture = texture,
+                Texture = _iconTexture,
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
                 Size = new Vector2(IconSize, IconSize),
             };
@@ -375,15 +397,77 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// Idle: icon at the left, text after it. Focused: the icon slides to the right end and the
-    /// text gets the left side. The right margin keeps the clear button just left of the icon.
+    /// The game's search bars draw their own × (NClearSearchButton with back_button_x), and its
+    /// theme gives LineEdit's built-in clear button no icon, so ours was invisible. Give it the
+    /// game's ×, at a fixed size because LineEdit draws the icon at the texture's own size.
     /// </summary>
-    private void UpdateIcon(bool animate)
+    private static void SetClearIcon(LineEdit input)
+    {
+        try
+        {
+            if (_clearTexture == null)
+            {
+                var source = ResourceLoader.Load<Texture2D>(ClearIconPath);
+                if (source == null)
+                {
+                    Log.Warn($"[DeckSearch] {ClearIconPath} not found, the clear button will be missing.");
+                    return;
+                }
+
+                _clearTexture = Resample(source, ClearSize, mipmaps: false) ?? source;
+            }
+
+            input.AddThemeIconOverride("clear", _clearTexture);
+            input.AddThemeColorOverride("clear_button_color", Colors.White);
+            input.AddThemeColorOverride("clear_button_color_pressed", new Color(0.8f, 0.8f, 0.8f));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] Could not set the clear button icon: {ex.Message}");
+        }
+    }
+
+    /// <summary>A copy of the texture scaled to fit size x size (keeping its shape), or null.</summary>
+    private static Texture2D? Resample(Texture2D source, int size, bool mipmaps)
+    {
+        Image? image = source.GetImage();
+        if (image == null || image.IsEmpty())
+        {
+            return null;
+        }
+
+        if (image.IsCompressed())
+        {
+            image.Decompress();
+        }
+
+        float scale = (float)size / Math.Max(image.GetWidth(), image.GetHeight());
+        image.Resize(
+            Math.Max(1, (int)Math.Round(image.GetWidth() * scale)),
+            Math.Max(1, (int)Math.Round(image.GetHeight() * scale)),
+            Image.Interpolation.Lanczos);
+        if (mipmaps)
+        {
+            image.GenerateMipmaps();
+        }
+
+        return ImageTexture.CreateFromImage(image);
+    }
+
+    /// <summary>
+    /// The icon stays put at the right end, nudged up a touch to sit level with the text. The
+    /// right margin keeps the text and the clear button clear of it, so the × lands just left of
+    /// the icon. The "Search..." prompt shows only while the box is idle and empty.
+    /// </summary>
+    private void ApplyFocusState()
     {
         if (_input == null)
         {
             return;
         }
+
+        bool focused = _input.HasFocus();
+        _input.PlaceholderText = focused ? "" : Placeholder;
 
         if (_icon == null || _root == null)
         {
@@ -391,23 +475,8 @@ internal sealed class SearchBox
             return;
         }
 
-        bool focused = _input.HasFocus();
-        float reserved = IconSize + (IconPad * 2);
-        SetInputMargins(focused ? 16 : reserved, focused ? reserved : 8);
-
-        var target = new Vector2(
-            focused ? _root.Size.X - IconPad - IconSize : IconPad,
-            (_root.Size.Y - IconSize) / 2);
-        _iconTween?.Kill();
-        if (animate && _root.IsInsideTree())
-        {
-            _iconTween = _root.CreateTween();
-            _iconTween.TweenProperty(_icon, "position", target, 0.35).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Expo);
-        }
-        else
-        {
-            _icon.Position = target;
-        }
+        SetInputMargins(16, IconSize + (IconPad * 2));
+        _icon.Position = new Vector2(_root.Size.X - IconPad - IconSize, ((_root.Size.Y - IconSize) / 2) - IconRaise);
     }
 
     private void SetInputMargins(float left, float right)
@@ -471,8 +540,8 @@ internal sealed class SearchBox
             input.AddThemeColorOverride("caret_color", Color);
             input.AddThemeColorOverride("selection_color", new Color(Color, 0.35f));
             input.AddThemeColorOverride("font_selected_color", Colors.White);
-            input.AddThemeColorOverride("clear_button_color", Color);
-            input.AddThemeColorOverride("clear_button_color_pressed", Colors.White);
+            // Opaque on purpose: a faded prompt looked off. It is hidden on focus instead.
+            input.AddThemeColorOverride("font_placeholder_color", Color);
         }
 
         public void ApplyTo(Label label, int fontSize) => ApplyCommon(label, fontSize);
