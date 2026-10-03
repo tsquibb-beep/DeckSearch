@@ -10,7 +10,7 @@
     // Also match words in the card text ("exhaust", "block"), not just card names.
     "searchDescriptions": true,
 
-    // How close a match has to be. Name matches score 100-120, typos in a name 45-75,
+    // How close a match has to be. Name matches score 100-120, card type or rarity 110, typos in a name 45-75,
     // words in the card text 50, typos in the card text 20-35. Raise to be stricter.
     "minScore": 30,
 

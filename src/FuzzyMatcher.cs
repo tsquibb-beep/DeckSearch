@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -10,9 +11,10 @@ namespace DeckSearch;
 /// or Godot dependency, so it can be exercised outside the game.
 ///
 /// A card matches when every query word is found somewhere (AND). Each word is tried as, in
-/// order of strength: a substring of the name, a typo of a name word, a word in the description,
-/// a typo of a description word. As a fallback the whole query may also match the name as a
-/// subsequence ("pstr" → "Perfected Strike"). The best of the two scores wins.
+/// order of strength: a substring of the name, a tag (card type or rarity, whole word only), a
+/// typo of a name word or tag, a word in the description, a typo of a description word. As a
+/// fallback the whole query may also match the name as a subsequence ("pstr" → "Perfected
+/// Strike"). The best of the two scores wins.
 /// </summary>
 public static class FuzzyMatcher
 {
@@ -21,12 +23,13 @@ public static class FuzzyMatcher
     /// </summary>
     public sealed class Target
     {
-        public Target(string name, string description)
+        public Target(string name, string description, IEnumerable<string>? tags = null)
         {
             Name = Normalize(name);
             NameWords = SplitWords(Name);
             Description = Normalize(description);
             DescriptionWords = SplitWords(Description);
+            TagWords = (tags ?? Array.Empty<string>()).SelectMany(t => SplitWords(Normalize(t))).Distinct().ToArray();
         }
 
         public string Name { get; }
@@ -36,6 +39,9 @@ public static class FuzzyMatcher
         public string Description { get; }
 
         public string[] DescriptionWords { get; }
+
+        /// <summary>Card type and rarity ("attack", "rare"), in the game's language and English.</summary>
+        public string[] TagWords { get; }
     }
 
     /// <summary>
@@ -139,7 +145,16 @@ public static class FuzzyMatcher
             return 100;
         }
 
-        double best = TypoScore(word, target.NameWords, 75);
+        // Tags match whole words only: as prefixes, "com" would pull in every Common card and
+        // "pow" every Power while the player is still typing a name.
+        if (target.TagWords.Contains(word))
+        {
+            return 110;
+        }
+
+        double best = Math.Max(
+            TypoScore(word, target.NameWords, 75),
+            TypoScore(word, target.TagWords, 75, wholeWordOnly: true));
 
         if (includeDescription && !shortWord)
         {
@@ -162,7 +177,7 @@ public static class FuzzyMatcher
     /// Compares the query word against each target word, and against the target word's prefix
     /// of the same length so a half-typed word with a typo ("defel") still finds "deflect".
     /// </summary>
-    private static double TypoScore(string word, string[] targetWords, double baseScore)
+    private static double TypoScore(string word, string[] targetWords, double baseScore, bool wholeWordOnly = false)
     {
         int allowed = AllowedEdits(word.Length);
         if (allowed == 0)
@@ -174,7 +189,7 @@ public static class FuzzyMatcher
         foreach (string candidate in targetWords)
         {
             int distance = Distance(word, candidate);
-            if (candidate.Length > word.Length)
+            if (!wholeWordOnly && candidate.Length > word.Length)
             {
                 distance = Math.Min(distance, Distance(word, candidate.Substring(0, word.Length)));
             }

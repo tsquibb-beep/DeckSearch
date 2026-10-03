@@ -10,6 +10,9 @@ character's colour.
   Perfected Strike).
 - **Card text too:** `exhaust` or `block` find cards by what they do. Name matches still count
   for more.
+- **Type and rarity:** `attack`, `skill`, `power`, `curse`, `status`, and `basic`, `common`,
+  `uncommon`, `rare` show every card of that kind. Combine them: `rare power`, `skill block`.
+  They match the whole word only, so `com` will not pull in every Common card while you type.
 - **Keeps your sort:** the Obtained / Type / Cost / A-Z buttons work as normal on the results.
   Clicking a card and paging through the inspect view stays within the results.
 - **Keys:** `Ctrl+F` jumps to the box. `Esc` clears it, and a second `Esc` leaves it. `Enter`

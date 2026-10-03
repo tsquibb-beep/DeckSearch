@@ -164,7 +164,38 @@ internal sealed class SearchBox
             Log.Warn($"[DeckSearch] No description for {card.Id}: {ex.Message}");
         }
 
-        return new FuzzyMatcher.Target(card.Title, description);
+        return new FuzzyMatcher.Target(card.Title, description, Tags(card));
+    }
+
+    /// <summary>
+    /// The card's type and rarity, both as the game shows them in the player's language and as the
+    /// English names, so "attack" works everywhere. The Card Library's own search matches the
+    /// English rarity names the same way.
+    /// </summary>
+    private static IEnumerable<string> Tags(CardModel card)
+    {
+        var tags = new List<string> { card.Type.ToString(), card.Rarity.ToString() };
+        TryAdd(tags, () => card.Type.ToLocString().GetFormattedText());
+        TryAdd(tags, () => card.Rarity.ToLocString().GetFormattedText());
+        return tags;
+    }
+
+    private static void TryAdd(List<string> tags, Func<string> localized)
+    {
+        try
+        {
+            // A missing translation can come back as its key ("CARD_RARITY.TOKEN"), which would
+            // make "card" match every card.
+            string text = localized();
+            if (!string.IsNullOrWhiteSpace(text) && !text.Contains('_') && !text.Contains('.'))
+            {
+                tags.Add(text);
+            }
+        }
+        catch (Exception)
+        {
+            // Not every rarity has a display name (None, Token...); the English name still counts.
+        }
     }
 
     private void OnQueryChanged(string text)
