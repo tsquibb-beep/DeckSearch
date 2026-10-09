@@ -30,7 +30,14 @@ internal sealed class SearchConfig
     [JsonPropertyName("debounceMs")]
     public int DebounceMs { get; set; } = 200;
 
-    /// <summary>Put the cursor in the box as soon as the Deck screen opens.</summary>
+    /// <summary>
+    /// Also put a sort bar and search box on the screens that pick cards from the deck: upgrade,
+    /// remove, transform and enchant.
+    /// </summary>
+    [JsonPropertyName("pickScreens")]
+    public bool PickScreens { get; set; } = true;
+
+    /// <summary>Put the cursor in the box as soon as the Deck screen or a picker opens.</summary>
     [JsonPropertyName("focusOnOpen")]
     public bool FocusOnOpen { get; set; } = false;
 

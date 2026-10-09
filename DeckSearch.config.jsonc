@@ -17,7 +17,11 @@
     // Pause after your last keystroke before the cards re-arrange, in milliseconds.
     "debounceMs": 200,
 
-    // Put the cursor in the search box as soon as the Deck screen opens.
+    // Also add the sort bar and search box to the screens that pick cards from your deck:
+    // upgrade (campfire, events, relics), remove, transform and enchant.
+    "pickScreens": true,
+
+    // Put the cursor in the search box as soon as the Deck screen or a card picker opens.
     "focusOnOpen": false,
 
     // Keys that jump to the search box. Godot key names, modifiers joined with "+",

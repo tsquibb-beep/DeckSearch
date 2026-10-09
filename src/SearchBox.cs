@@ -8,25 +8,48 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
-using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 
 namespace DeckSearch;
 
 /// <summary>
-/// The search box on one Deck screen, and the filter it applies. A plain C# object rather than a
-/// Godot node subclass: the Godot source generators do not run over mod assemblies, so a subclass
-/// would never get its callbacks. It lives exactly as long as its screen.
+/// The search box on one Deck screen or deck card picker (upgrade, remove, transform, enchant),
+/// and the filter it applies. A plain C# object rather than a Godot node subclass: the Godot
+/// source generators do not run over mod assemblies, so a subclass would never get its
+/// callbacks. It lives exactly as long as its screen.
 /// </summary>
 internal sealed class SearchBox
 {
-    private static readonly ConditionalWeakTable<NDeckViewScreen, SearchBox> Boxes = new();
+    private static readonly ConditionalWeakTable<Control, SearchBox> Boxes = new();
 
     private static readonly MethodInfo? DisplayCardsMethod = AccessTools.Method(typeof(NDeckViewScreen), "DisplayCards");
+
+    private static readonly FieldInfo? PickerCardsField = AccessTools.Field(typeof(NCardGridSelectionScreen), "_cards");
+
+    private static readonly FieldInfo? HighlightedCardsField = AccessTools.Field(typeof(NCardGrid), "_highlightedCards");
+
+    private static readonly FieldInfo? ScrollingEnabledField = AccessTools.Field(typeof(NCardGrid), "_scrollingEnabled");
+
+    private static readonly FieldInfo? TargetDragField = AccessTools.Field(typeof(NCardGrid), "_targetDrag");
+
+    private static readonly PropertyInfo? ScrollLimitTopProperty = AccessTools.Property(typeof(NCardGrid), "ScrollLimitTop");
+
+    private const string SortButtonScene = "res://scenes/screens/deck_view_screen/deck_view_sort_button.tscn";
+
+    private const string SortBarTexture = "res://images/ui/color_tab_bar.png";
+
+    /// <summary>How far the Deck screen pushes its cards down to make room for the sort bar.</summary>
+    private const int SortBarGridOffset = 100;
 
     private static readonly StringName SaturationParam = "s";
 
@@ -40,7 +63,26 @@ internal sealed class SearchBox
     /// <summary>The most recently opened box, for the console command.</summary>
     private static WeakReference<SearchBox>? _latest;
 
-    private readonly NDeckViewScreen _screen;
+    private readonly Control _screen;
+
+    private readonly NCardGrid? _grid;
+
+    /// <summary>
+    /// A card picker has no sort bar of its own, so the box builds one and runs it: it keeps the
+    /// cards the picker offered and the sort order, and redraws the grid itself.
+    /// </summary>
+    private readonly bool _isPicker;
+
+    private IReadOnlyList<CardModel> _pickerCards = Array.Empty<CardModel>();
+
+    /// <summary>The Deck screen's starting order: as obtained, then type, cost, name.</summary>
+    private readonly List<SortingOrders> _sorting = new()
+    {
+        SortingOrders.Ascending,
+        SortingOrders.TypeAscending,
+        SortingOrders.CostAscending,
+        SortingOrders.AlphabetAscending,
+    };
 
     private readonly Dictionary<CardModel, FuzzyMatcher.Target> _targets = new(ReferenceEqualityComparer.Instance);
 
@@ -97,23 +139,46 @@ internal sealed class SearchBox
 
     private readonly List<(StringName Signal, Callable Callable)> _controllerSignals = new();
 
-    private SearchBox(NDeckViewScreen screen)
+    private SearchBox(Control screen, bool isPicker)
     {
         _screen = screen;
+        _isPicker = isPicker;
+        _grid = screen.GetNodeOrNull<NCardGrid>("CardGrid");
     }
 
-    public static SearchBox? For(NDeckViewScreen screen) => Boxes.TryGetValue(screen, out SearchBox? box) ? box : null;
+    public static SearchBox? For(Control screen) => Boxes.TryGetValue(screen, out SearchBox? box) ? box : null;
 
     public static SearchBox? Latest => _latest != null && _latest.TryGetTarget(out SearchBox? box) && GodotObject.IsInstanceValid(box._screen) ? box : null;
 
-    public static void Attach(NDeckViewScreen screen)
+    public static void Attach(NDeckViewScreen screen) => Attach(screen, isPicker: false);
+
+    public static void Attach(NCardGridSelectionScreen screen)
+    {
+        if (SearchConfig.Current.PickScreens)
+        {
+            Attach(screen, isPicker: true);
+        }
+    }
+
+    private static void Attach(Control screen, bool isPicker)
     {
         if (!SearchConfig.Current.Enabled)
         {
             return;
         }
 
-        var box = new SearchBox(screen);
+        var box = new SearchBox(screen, isPicker);
+        if (isPicker)
+        {
+            if (box._grid == null || PickerCardsField?.GetValue(screen) is not IReadOnlyList<CardModel> cards)
+            {
+                Log.Warn($"[DeckSearch] {screen.GetType().Name} has no card grid (game layout changed?), no search box.");
+                return;
+            }
+
+            box._pickerCards = cards;
+        }
+
         Boxes.AddOrUpdate(screen, box);
         _latest = new WeakReference<SearchBox>(box);
         box.Build();
@@ -232,16 +297,46 @@ internal sealed class SearchBox
         Redraw();
     }
 
-    /// <summary>Re-runs the screen's own DisplayCards, which ends in our SetCards prefix.</summary>
+    /// <summary>
+    /// Re-runs the Deck screen's own DisplayCards, or on a picker hands the grid its cards again.
+    /// Both end in our SetCards prefix, which applies the filter.
+    /// </summary>
     private void Redraw()
     {
         try
         {
-            DisplayCardsMethod?.Invoke(_screen, null);
+            if (!_isPicker)
+            {
+                DisplayCardsMethod?.Invoke(_screen, null);
+                return;
+            }
+
+            if (_grid != null && GodotObject.IsInstanceValid(_grid))
+            {
+                _grid.SetCards(_pickerCards, PileType.None, _sorting);
+                RestoreHighlights();
+            }
         }
         catch (Exception ex)
         {
-            Log.Error($"[DeckSearch] Could not redraw the deck: {ex}");
+            Log.Error($"[DeckSearch] Could not redraw the cards: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// The grid rebuilds its card nodes on every SetCards but only re-applies the glow on cards
+    /// already picked when it scrolls, so a re-filter would leave picked cards looking unpicked.
+    /// </summary>
+    private void RestoreHighlights()
+    {
+        if (_grid == null || HighlightedCardsField?.GetValue(_grid) is not List<CardModel> picked)
+        {
+            return;
+        }
+
+        foreach (CardModel card in picked)
+        {
+            _grid.GetCardNode(card)?.CardHighlight.AnimShow();
         }
     }
 
@@ -261,7 +356,8 @@ internal sealed class SearchBox
 
         // The sort buttons live in an HBoxContainer inside the grid's scroll area, so joining that
         // row puts the box on the bar, lets the row lay it out, and scrolls it with the cards.
-        Control? sorter = _screen.GetNodeOrNull<Control>("%ObtainedSorter");
+        // A picker has no bar, so we build the Deck screen's one in the same place.
+        Control? sorter = _isPicker ? BuildSortBar() : _screen.GetNodeOrNull<Control>("%ObtainedSorter");
         _sortRow = sorter?.GetParent() as HBoxContainer;
         TextStyle style = TextStyle.From(sorter);
 
@@ -302,6 +398,17 @@ internal sealed class SearchBox
         WatchController();
         _screen.TreeExiting += Detach;
 
+        if (_isPicker && _grid != null)
+        {
+            // Push the cards down below the new bar, as the Deck screen does.
+            if (_sortRow != null)
+            {
+                _grid.YOffset = SortBarGridOffset;
+            }
+
+            Redraw();
+        }
+
         Callable.From(() =>
         {
             Place();
@@ -310,6 +417,125 @@ internal sealed class SearchBox
                 _input.GrabFocus();
             }
         }).CallDeferred();
+    }
+
+    /// <summary>
+    /// The Deck screen's sort bar, rebuilt on a picker from the same parts: the tab-bar strip tinted
+    /// with the character's card-frame material, and the game's own sort-button scene. Sizes and
+    /// placement copy SortingOptions in deck_view_screen.tscn. Returns the first sort button, or
+    /// null if the parts could not be found (the box then falls back to a plain one).
+    /// </summary>
+    private Control? BuildSortBar()
+    {
+        if (_grid?.GetNodeOrNull<Control>("%ScrollContainer") is not { } scroll)
+        {
+            Log.Warn("[DeckSearch] Picker grid has no %ScrollContainer, no sort bar.");
+            return null;
+        }
+
+        PackedScene? buttonScene = ResourceLoader.Load<PackedScene>(SortButtonScene);
+        if (buttonScene == null)
+        {
+            Log.Warn($"[DeckSearch] {SortButtonScene} not found, no sort bar.");
+            return null;
+        }
+
+        var bar = new Control
+        {
+            Name = "DeckSearchSortBar",
+            CustomMinimumSize = new Vector2(200, 60),
+        };
+        bar.SetAnchorAndOffset(Side.Left, 0, 56);
+        bar.SetAnchorAndOffset(Side.Top, 0, 92);
+        bar.SetAnchorAndOffset(Side.Right, 1, -33);
+        bar.SetAnchorAndOffset(Side.Bottom, 0, 152);
+
+        ShaderMaterial? hue = CharacterHue();
+        var background = new TextureRect
+        {
+            Name = "SortingBg",
+            Texture = ResourceLoader.Load<Texture2D>(SortBarTexture),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Material = hue,
+        };
+        bar.AddChild(background);
+        background.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+
+        var row = new HBoxContainer
+        {
+            Name = "HBoxContainer",
+            Alignment = BoxContainer.AlignmentMode.Center,
+        };
+        row.AddThemeConstantOverride("separation", 50);
+        bar.AddChild(row);
+
+        // Bottom before top: Godot never lets the top anchor pass the bottom one, so setting the
+        // top to 0.5 first snaps it back to 0 and the row comes out 72px tall instead of 42.
+        row.SetAnchorAndOffset(Side.Right, 1, 0);
+        row.SetAnchorAndOffset(Side.Bottom, 0.5f, 21);
+        row.SetAnchorAndOffset(Side.Left, 0, 0);
+        row.SetAnchorAndOffset(Side.Top, 0.5f, -21);
+
+        var sorts = new (string Label, SortingOrders Ascending, SortingOrders Descending)[]
+        {
+            ("SORT_OBTAINED", SortingOrders.Ascending, SortingOrders.Descending),
+            ("SORT_TYPE", SortingOrders.TypeAscending, SortingOrders.TypeDescending),
+            ("SORT_COST", SortingOrders.CostAscending, SortingOrders.CostDescending),
+            ("SORT_ALPHABET", SortingOrders.AlphabetAscending, SortingOrders.AlphabetDescending),
+        };
+
+        var buttons = new List<NCardViewSortButton>();
+        foreach (var _ in sorts)
+        {
+            var button = buttonScene.Instantiate<NCardViewSortButton>();
+            button.CustomMinimumSize = new Vector2(250, 42);
+            row.AddChild(button);
+            buttons.Add(button);
+        }
+
+        // Behind the cards, as on the Deck screen, so a hovered card in the top row draws over it.
+        scroll.AddChild(bar);
+        scroll.MoveChild(bar, 0);
+
+        // The buttons only find their own nodes once _Ready has run, which adding the bar did.
+        for (int i = 0; i < buttons.Count; i++)
+        {
+            NCardViewSortButton button = buttons[i];
+            (string label, SortingOrders ascending, SortingOrders descending) = sorts[i];
+            button.SetLabel(new LocString("gameplay_ui", label).GetRawText());
+            if (hue != null)
+            {
+                button.SetHue(hue);
+            }
+
+            button.Connect(NClickableControl.SignalName.Released, Callable.From<NButton>(_ => OnSort(button, ascending, descending)));
+        }
+
+        return buttons[0];
+    }
+
+    /// <summary>Same rule as the Deck screen: the last sort clicked leads, the others break ties.</summary>
+    private void OnSort(NCardViewSortButton button, SortingOrders ascending, SortingOrders descending)
+    {
+        _sorting.Remove(ascending);
+        _sorting.Remove(descending);
+        _sorting.Insert(0, button.IsDescending ? descending : ascending);
+        Redraw();
+    }
+
+    /// <summary>The material the Deck screen tints its bar with: the owner's card-frame colour.</summary>
+    private ShaderMaterial? CharacterHue()
+    {
+        try
+        {
+            return _pickerCards.FirstOrDefault()?.Owner?.Character.CardPool.FrameMaterial as ShaderMaterial;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] No character colour for the picker's sort bar: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>
@@ -681,6 +907,31 @@ internal sealed class SearchBox
         }
     }
 
+    /// <summary>
+    /// Every open screen has a shortcut button, and the first to see the key swallows it, so
+    /// whichever button fires hands the key to the box on the screen in front: the Deck screen
+    /// can be open over a picker. A card being inspected is in front of both, so nothing happens.
+    /// </summary>
+    private static void FocusCurrentBox()
+    {
+        foreach (KeyValuePair<Control, SearchBox> entry in Boxes)
+        {
+            if (entry.Value.IsCurrentScreen())
+            {
+                entry.Value.FocusBox();
+                return;
+            }
+        }
+    }
+
+    private bool IsCurrentScreen()
+    {
+        return GodotObject.IsInstanceValid(_screen)
+            && _screen.IsInsideTree()
+            && _screen is IScreenContext screen
+            && ActiveScreenContext.Instance.IsCurrent(screen);
+    }
+
     private void FocusBox()
     {
         if (_input == null || _root == null || !_root.IsVisibleInTree())
@@ -688,14 +939,30 @@ internal sealed class SearchBox
             return;
         }
 
-        // Do not grab focus from underneath the card inspect view.
-        if (NGame.Instance?.GetInspectCardScreen() is { Visible: true })
+        // A picker stops its grid scrolling while its confirm view covers the cards.
+        if (_grid != null && ScrollingEnabledField?.GetValue(_grid) is false)
         {
             return;
         }
 
+        ScrollToTop();
         _input.GrabFocus();
         _input.SelectAll();
+    }
+
+    /// <summary>
+    /// The box scrolls away with the cards, and the grid scrolls by moving its content rather
+    /// than through a ScrollContainer, so focus alone never brings it back into view. Setting
+    /// the grid's scroll target lets its own easing glide back up to the bar.
+    /// </summary>
+    private void ScrollToTop()
+    {
+        if (_grid == null || TargetDragField == null || ScrollLimitTopProperty?.GetValue(_grid) is not float top)
+        {
+            return;
+        }
+
+        TargetDragField.SetValue(_grid, top);
     }
 
     /// <summary>
@@ -731,7 +998,7 @@ internal sealed class SearchBox
             ShortcutFeedback = false,
             ShortcutInTooltip = false,
         };
-        button.Pressed += FocusBox;
+        button.Pressed += FocusCurrentBox;
         return button;
     }
 

@@ -7,7 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 namespace DeckSearch;
 
 /// <summary>
-/// `dsearch diag` describes the open Deck screen and where the box went; `dsearch test <query>`
+/// `dsearch diag` describes the latest Deck screen or card picker and where the box went; `dsearch test <query>`
 /// scores your deck against a query; `dsearch reload` re-reads the config.
 ///
 /// The dev console discovers commands in loaded mods by reflection, so shipping this public
@@ -19,7 +19,7 @@ public class SearchConsoleCmd : AbstractConsoleCmd
 
     public override string Args => "[diag|test <query>|reload]";
 
-    public override string Description => "DeckSearch: inspect the Deck screen search box or test a query.";
+    public override string Description => "DeckSearch: inspect the search box or test a query.";
 
     /// <summary>Searching is local to this client — nothing to synchronise.</summary>
     public override bool IsNetworked => false;
@@ -31,7 +31,7 @@ public class SearchConsoleCmd : AbstractConsoleCmd
             case "diag":
                 return SearchBox.Latest is { } box
                     ? new CmdResult(success: true, box.Diagnostics())
-                    : new CmdResult(success: false, "Open the Deck screen first (it stays open behind the console).");
+                    : new CmdResult(success: false, "Open the Deck screen or a card picker first (it stays open behind the console).");
 
             case "test":
                 return Test(issuingPlayer, string.Join(" ", args.Skip(1)));
