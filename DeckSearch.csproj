@@ -7,7 +7,7 @@
     <AssemblyName>DeckSearch</AssemblyName>
     <RootNamespace>DeckSearch</RootNamespace>
     <!-- Mod id must match the assembly name: the loader looks for mods/<dir>/<id>.dll -->
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <!-- Game assemblies are provided by the host process; never copy them next to the mod. -->
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <GenerateDependencyFile>false</GenerateDependencyFile>

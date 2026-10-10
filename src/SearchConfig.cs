@@ -37,13 +37,30 @@ internal sealed class SearchConfig
     [JsonPropertyName("pickScreens")]
     public bool PickScreens { get; set; } = true;
 
-    /// <summary>Put the cursor in the box as soon as the Deck screen or a picker opens.</summary>
+    /// <summary>Also put a sort bar and search box on the draw, discard and exhaust piles in combat.</summary>
+    [JsonPropertyName("pileScreens")]
+    public bool PileScreens { get; set; } = true;
+
+    /// <summary>
+    /// Typing on a screen with a box goes straight into it: no click or shortcut needed. The game's
+    /// letter hotkeys (D, A, S, X, M, E) then type instead of closing that screen; Esc still does.
+    /// </summary>
+    [JsonPropertyName("typeToSearch")]
+    public bool TypeToSearch { get; set; } = true;
+
+    /// <summary>
+    /// Put the cursor in the box as soon as the Deck screen or a picker opens. Never on a combat
+    /// pile, whose open key also closes it.
+    /// </summary>
     [JsonPropertyName("focusOnOpen")]
     public bool FocusOnOpen { get; set; } = false;
 
-    /// <summary>Keys that jump to the search box, in Godot's key-name format ("Ctrl+F", "Slash").</summary>
+    /// <summary>
+    /// Keys that jump to the search box, in Godot's key-name format ("Ctrl+F", "Slash"). None by
+    /// default since type-to-search made Ctrl+F redundant (Tom's call).
+    /// </summary>
     [JsonPropertyName("focusShortcuts")]
-    public List<string> FocusShortcuts { get; set; } = new() { "Ctrl+F" };
+    public List<string> FocusShortcuts { get; set; } = new();
 
     /// <summary>Width of the search box on the sort bar, in pixels.</summary>
     [JsonPropertyName("searchWidth")]

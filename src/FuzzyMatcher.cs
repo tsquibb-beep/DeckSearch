@@ -14,7 +14,8 @@ namespace DeckSearch;
 /// order of strength: a substring of the name, a tag (card type or rarity, whole word only), a
 /// typo of a name word or tag, a word in the description, a typo of a description word. As a
 /// fallback the whole query may also match the name as a subsequence ("pstr" → "Perfected
-/// Strike"). The best of the two scores wins.
+/// Strike"). The best of the two scores wins. A word written with '#' ("#attack") is checked
+/// against the tags alone; see <see cref="Query"/>.
 /// </summary>
 public static class FuzzyMatcher
 {
@@ -23,13 +24,17 @@ public static class FuzzyMatcher
     /// </summary>
     public sealed class Target
     {
-        public Target(string name, string description, IEnumerable<string>? tags = null)
+        public Target(string name, string description, IEnumerable<string>? tags = null, IEnumerable<string>? markedTags = null)
         {
             Name = Normalize(name);
             NameWords = SplitWords(Name);
             Description = Normalize(description);
             DescriptionWords = SplitWords(Description);
             TagWords = (tags ?? Array.Empty<string>()).SelectMany(t => SplitWords(Normalize(t))).Distinct().ToArray();
+            MarkedTagWords = TagWords
+                .Concat((markedTags ?? Array.Empty<string>()).SelectMany(t => SplitWords(Normalize(t))))
+                .Distinct()
+                .ToArray();
         }
 
         public string Name { get; }
@@ -42,6 +47,12 @@ public static class FuzzyMatcher
 
         /// <summary>Card type and rarity ("attack", "rare"), in the game's language and English.</summary>
         public string[] TagWords { get; }
+
+        /// <summary>
+        /// What a '#' word may match: the tags plus ones that only make sense asked for outright
+        /// ("upgraded"), so a bare "upgrade" still finds cards that upgrade, not every upgraded card.
+        /// </summary>
+        public string[] MarkedTagWords { get; }
     }
 
     /// <summary>
@@ -98,6 +109,63 @@ public static class FuzzyMatcher
         "nnnnnnnnnoooooooorrrrrrssssssssttttttuuuuuuuuuuuuwwyyyzzzzzzs";
 
     /// <summary>
+    /// What the player typed, split into the words to search for and the words marked with '#',
+    /// which match the card's type or rarity only, never its name or text: "#attack" finds Attacks
+    /// but not a Skill that says "attack".
+    /// </summary>
+    public sealed class Query
+    {
+        public const char TagMark = '#';
+
+        public static readonly Query Empty = new("", Array.Empty<string>());
+
+        private Query(string text, string[] tagWords)
+        {
+            Text = text;
+            TagWords = tagWords;
+            Key = string.Join(' ', TagWords.Select(t => TagMark + t).Prepend(Text).Where(w => w.Length > 0));
+        }
+
+        /// <summary>The normalised words to look for in names, tags and card text.</summary>
+        public string Text { get; }
+
+        /// <summary>The normalised words that must match a tag.</summary>
+        public string[] TagWords { get; }
+
+        /// <summary>Equal for queries that search alike, so "#attack " does not redraw again.</summary>
+        public string Key { get; }
+
+        public bool IsEmpty => Text.Length == 0 && TagWords.Length == 0;
+
+        /// <summary>
+        /// Everything after a '#' up to the next space is a tag word, so "#rare #attack",
+        /// "#attack#rare" and "strike #attack" all work. A lone '#' while typing asks for nothing.
+        /// </summary>
+        public static Query Parse(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return Empty;
+            }
+
+            var text = new List<string>();
+            var tags = new List<string>();
+            foreach (string token in raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] parts = token.Split(TagMark);
+                text.Add(Normalize(parts[0]));
+                tags.AddRange(parts.Skip(1).SelectMany(part => SplitWords(Normalize(part))));
+            }
+
+            return new Query(
+                string.Join(' ', text.Where(t => t.Length > 0)),
+                tags.Distinct().ToArray());
+        }
+
+        public override string ToString() => Key;
+    }
+
+    /// <summary>
     /// Returns 0 for no match, otherwise a score where higher is better (roughly 0-120).
     /// An empty query matches everything.
     /// </summary>
@@ -111,6 +179,65 @@ public static class FuzzyMatcher
         return Math.Max(
             WordsScore(normalizedQuery, target, includeDescription),
             SubsequenceScore(normalizedQuery, target.Name));
+    }
+
+    /// <summary>
+    /// Every '#' word must match a tag and the rest must match as usual; the score is the
+    /// average over all the words.
+    /// </summary>
+    public static double Score(Query query, Target target, bool includeDescription)
+    {
+        if (query.TagWords.Length == 0)
+        {
+            return Score(query.Text, target, includeDescription);
+        }
+
+        double total = 0;
+        foreach (string word in query.TagWords)
+        {
+            double best = TagOnlyScore(word, target);
+            if (best <= 0)
+            {
+                return 0;
+            }
+
+            total += best;
+        }
+
+        int textWords = 0;
+        if (query.Text.Length > 0)
+        {
+            double text = Score(query.Text, target, includeDescription);
+            if (text <= 0)
+            {
+                return 0;
+            }
+
+            textWords = SplitWords(query.Text).Length;
+            total += text * textWords;
+        }
+
+        return total / (query.TagWords.Length + textWords);
+    }
+
+    /// <summary>
+    /// The player asked for a tag outright, so unlike a bare word a prefix counts too: "#att"
+    /// already shows the Attacks while the word is still being typed.
+    /// </summary>
+    private static double TagOnlyScore(string word, Target target)
+    {
+        string[] tags = target.MarkedTagWords;
+        if (tags.Contains(word))
+        {
+            return 110;
+        }
+
+        if (tags.Any(w => w.StartsWith(word, StringComparison.Ordinal)))
+        {
+            return 100;
+        }
+
+        return TypoScore(word, tags, 75, wholeWordOnly: true);
     }
 
     private static double WordsScore(string query, Target target, bool includeDescription)

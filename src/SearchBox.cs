@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Debug;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary;
@@ -23,8 +24,8 @@ using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 namespace DeckSearch;
 
 /// <summary>
-/// The search box on one Deck screen or deck card picker (upgrade, remove, transform, enchant),
-/// and the filter it applies. A plain C# object rather than a Godot node subclass: the Godot
+/// The search box on one Deck screen, deck card picker (upgrade, remove, transform, enchant) or
+/// combat pile (draw, discard, exhaust), and the filter it applies. A plain C# object rather than a Godot node subclass: the Godot
 /// source generators do not run over mod assemblies, so a subclass would never get its
 /// callbacks. It lives exactly as long as its screen.
 /// </summary>
@@ -35,6 +36,8 @@ internal sealed class SearchBox
     private static readonly MethodInfo? DisplayCardsMethod = AccessTools.Method(typeof(NDeckViewScreen), "DisplayCards");
 
     private static readonly FieldInfo? PickerCardsField = AccessTools.Field(typeof(NCardGridSelectionScreen), "_cards");
+
+    private static readonly MethodInfo? PileContentsChangedMethod = AccessTools.Method(typeof(NCardPileScreen), "OnPileContentsChanged");
 
     private static readonly FieldInfo? HighlightedCardsField = AccessTools.Field(typeof(NCardGrid), "_highlightedCards");
 
@@ -67,11 +70,20 @@ internal sealed class SearchBox
 
     private readonly NCardGrid? _grid;
 
+    private enum ScreenKind
+    {
+        Deck,
+        Picker,
+        Pile,
+    }
+
+    private readonly ScreenKind _kind;
+
     /// <summary>
-    /// A card picker has no sort bar of its own, so the box builds one and runs it: it keeps the
-    /// cards the picker offered and the sort order, and redraws the grid itself.
+    /// Pickers and piles have no sort bar of their own, so the box builds one and runs it: it keeps
+    /// the sort order and has the grid redrawn with it.
     /// </summary>
-    private readonly bool _isPicker;
+    private bool OwnsSortBar => _kind != ScreenKind.Deck;
 
     private IReadOnlyList<CardModel> _pickerCards = Array.Empty<CardModel>();
 
@@ -129,7 +141,7 @@ internal sealed class SearchBox
 
     private const string Placeholder = "Search...";
 
-    private string _query = "";
+    private FuzzyMatcher.Query _query = FuzzyMatcher.Query.Empty;
 
     private int _version;
 
@@ -139,10 +151,10 @@ internal sealed class SearchBox
 
     private readonly List<(StringName Signal, Callable Callable)> _controllerSignals = new();
 
-    private SearchBox(Control screen, bool isPicker)
+    private SearchBox(Control screen, ScreenKind kind)
     {
         _screen = screen;
-        _isPicker = isPicker;
+        _kind = kind;
         _grid = screen.GetNodeOrNull<NCardGrid>("CardGrid");
     }
 
@@ -150,33 +162,52 @@ internal sealed class SearchBox
 
     public static SearchBox? Latest => _latest != null && _latest.TryGetTarget(out SearchBox? box) && GodotObject.IsInstanceValid(box._screen) ? box : null;
 
-    public static void Attach(NDeckViewScreen screen) => Attach(screen, isPicker: false);
+    public static void Attach(NDeckViewScreen screen) => Attach(screen, ScreenKind.Deck);
 
     public static void Attach(NCardGridSelectionScreen screen)
     {
         if (SearchConfig.Current.PickScreens)
         {
-            Attach(screen, isPicker: true);
+            Attach(screen, ScreenKind.Picker);
         }
     }
 
-    private static void Attach(Control screen, bool isPicker)
+    public static void Attach(NCardPileScreen screen)
+    {
+        if (SearchConfig.Current.PileScreens)
+        {
+            Attach(screen, ScreenKind.Pile);
+        }
+    }
+
+    private static void Attach(Control screen, ScreenKind kind)
     {
         if (!SearchConfig.Current.Enabled)
         {
             return;
         }
 
-        var box = new SearchBox(screen, isPicker);
-        if (isPicker)
+        var box = new SearchBox(screen, kind);
+        if (kind != ScreenKind.Deck && box._grid == null)
         {
-            if (box._grid == null || PickerCardsField?.GetValue(screen) is not IReadOnlyList<CardModel> cards)
+            Log.Warn($"[DeckSearch] {screen.GetType().Name} has no card grid (game layout changed?), no search box.");
+            return;
+        }
+
+        if (kind == ScreenKind.Picker)
+        {
+            if (PickerCardsField?.GetValue(screen) is not IReadOnlyList<CardModel> cards)
             {
-                Log.Warn($"[DeckSearch] {screen.GetType().Name} has no card grid (game layout changed?), no search box.");
+                Log.Warn($"[DeckSearch] {screen.GetType().Name} has no card list (game changed?), no search box.");
                 return;
             }
 
             box._pickerCards = cards;
+        }
+        else if (kind == ScreenKind.Pile && PileContentsChangedMethod == null)
+        {
+            Log.Warn("[DeckSearch] NCardPileScreen.OnPileContentsChanged is gone (game changed?), no search box.");
+            return;
         }
 
         Boxes.AddOrUpdate(screen, box);
@@ -189,7 +220,7 @@ internal sealed class SearchBox
     public IReadOnlyList<CardModel> Filter(IReadOnlyList<CardModel> cards)
     {
         _total = cards.Count;
-        if (_query.Length == 0)
+        if (_query.IsEmpty)
         {
             _shown = cards.Count;
             UpdateEmptyLabel();
@@ -204,6 +235,13 @@ internal sealed class SearchBox
     }
 
     public void InvalidateCache() => _targets.Clear();
+
+    /// <summary>
+    /// The sort order the grid should use: ours where we run the sort bar. A combat pile redraws
+    /// itself whenever its cards change, always asking for pile order, so this keeps the
+    /// player's choice through a draw or a discard.
+    /// </summary>
+    public List<SortingOrders> SortingFor(List<SortingOrders> requested) => OwnsSortBar ? _sorting : requested;
 
     private double Score(CardModel card)
     {
@@ -229,8 +267,12 @@ internal sealed class SearchBox
             Log.Warn($"[DeckSearch] No description for {card.Id}: {ex.Message}");
         }
 
-        return new FuzzyMatcher.Target(card.Title, description, Tags(card));
+        return new FuzzyMatcher.Target(card.Title, description, Tags(card), MarkedTags(card));
     }
+
+    /// <summary>Tags found only with '#': "#upgraded" (or "#up") for upgraded cards.</summary>
+    private static IEnumerable<string> MarkedTags(CardModel card) =>
+        card.IsUpgraded ? new[] { "Upgraded" } : Array.Empty<string>();
 
     /// <summary>
     /// The card's type and rarity, both as the game shows them in the player's language and as the
@@ -287,8 +329,8 @@ internal sealed class SearchBox
 
     private void Apply(string text)
     {
-        string query = FuzzyMatcher.Normalize(text);
-        if (query == _query)
+        FuzzyMatcher.Query query = FuzzyMatcher.Query.Parse(text);
+        if (query.Key == _query.Key)
         {
             return;
         }
@@ -298,23 +340,30 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// Re-runs the Deck screen's own DisplayCards, or on a picker hands the grid its cards again.
-    /// Both end in our SetCards prefix, which applies the filter.
+    /// Re-runs the Deck screen's own DisplayCards or the pile screen's OnPileContentsChanged, or on
+    /// a picker hands the grid its cards again. All end in our SetCards prefix, which applies the
+    /// filter (and on a pile, our sort order).
     /// </summary>
     private void Redraw()
     {
         try
         {
-            if (!_isPicker)
+            switch (_kind)
             {
-                DisplayCardsMethod?.Invoke(_screen, null);
-                return;
-            }
+                case ScreenKind.Deck:
+                    DisplayCardsMethod?.Invoke(_screen, null);
+                    break;
 
-            if (_grid != null && GodotObject.IsInstanceValid(_grid))
-            {
-                _grid.SetCards(_pickerCards, PileType.None, _sorting);
-                RestoreHighlights();
+                case ScreenKind.Pile:
+                    // The game's own redraw, so the draw pile keeps its rarity order and never
+                    // shows the order the cards will be drawn in.
+                    PileContentsChangedMethod?.Invoke(_screen, null);
+                    break;
+
+                case ScreenKind.Picker when _grid != null && GodotObject.IsInstanceValid(_grid):
+                    _grid.SetCards(_pickerCards, PileType.None, _sorting);
+                    RestoreHighlights();
+                    break;
             }
         }
         catch (Exception ex)
@@ -356,8 +405,8 @@ internal sealed class SearchBox
 
         // The sort buttons live in an HBoxContainer inside the grid's scroll area, so joining that
         // row puts the box on the bar, lets the row lay it out, and scrolls it with the cards.
-        // A picker has no bar, so we build the Deck screen's one in the same place.
-        Control? sorter = _isPicker ? BuildSortBar() : _screen.GetNodeOrNull<Control>("%ObtainedSorter");
+        // Pickers and piles have no bar, so we build the Deck screen's one in the same place.
+        Control? sorter = OwnsSortBar ? BuildSortBar() : _screen.GetNodeOrNull<Control>("%ObtainedSorter");
         _sortRow = sorter?.GetParent() as HBoxContainer;
         TextStyle style = TextStyle.From(sorter);
 
@@ -398,7 +447,7 @@ internal sealed class SearchBox
         WatchController();
         _screen.TreeExiting += Detach;
 
-        if (_isPicker && _grid != null)
+        if (OwnsSortBar && _grid != null)
         {
             // Push the cards down below the new bar, as the Deck screen does.
             if (_sortRow != null)
@@ -412,7 +461,8 @@ internal sealed class SearchBox
         Callable.From(() =>
         {
             Place();
-            if (config.FocusOnOpen && _root.Visible)
+            // Not on a combat pile: its open key also closes it, and the box would swallow that.
+            if (config.FocusOnOpen && _kind != ScreenKind.Pile && _root.Visible)
             {
                 _input.GrabFocus();
             }
@@ -420,7 +470,7 @@ internal sealed class SearchBox
     }
 
     /// <summary>
-    /// The Deck screen's sort bar, rebuilt on a picker from the same parts: the tab-bar strip tinted
+    /// The Deck screen's sort bar, rebuilt on a picker or pile from the same parts: the tab-bar strip tinted
     /// with the character's card-frame material, and the game's own sort-button scene. Sizes and
     /// placement copy SortingOptions in deck_view_screen.tscn. Returns the first sort button, or
     /// null if the parts could not be found (the box then falls back to a plain one).
@@ -429,7 +479,7 @@ internal sealed class SearchBox
     {
         if (_grid?.GetNodeOrNull<Control>("%ScrollContainer") is not { } scroll)
         {
-            Log.Warn("[DeckSearch] Picker grid has no %ScrollContainer, no sort bar.");
+            Log.Warn($"[DeckSearch] {_screen.GetType().Name} grid has no %ScrollContainer, no sort bar.");
             return null;
         }
 
@@ -524,16 +574,20 @@ internal sealed class SearchBox
         Redraw();
     }
 
-    /// <summary>The material the Deck screen tints its bar with: the owner's card-frame colour.</summary>
+    /// <summary>
+    /// The material the Deck screen tints its bar with: the owner's card-frame colour. The game
+    /// never opens an empty pile, so there is always a card to ask.
+    /// </summary>
     private ShaderMaterial? CharacterHue()
     {
         try
         {
-            return _pickerCards.FirstOrDefault()?.Owner?.Character.CardPool.FrameMaterial as ShaderMaterial;
+            IEnumerable<CardModel> cards = _screen is NCardPileScreen pile ? pile.Pile.Cards : _pickerCards;
+            return cards.FirstOrDefault()?.Owner?.Character.CardPool.FrameMaterial as ShaderMaterial;
         }
         catch (Exception ex)
         {
-            Log.Warn($"[DeckSearch] No character colour for the picker's sort bar: {ex.Message}");
+            Log.Warn($"[DeckSearch] No character colour for the sort bar: {ex.Message}");
             return null;
         }
     }
@@ -875,7 +929,8 @@ internal sealed class SearchBox
 
     /// <summary>
     /// Esc clears a query, then a second Esc leaves the box so the game's own Esc (close screen)
-    /// works again. The game ignores its hotkeys while a text box is being edited.
+    /// works again. The game ignores its hotkeys while a text box is being edited. With
+    /// type-to-search one Esc does both, since typing on gets straight back into the box.
     /// </summary>
     private void OnInputGuiInput(InputEvent inputEvent)
     {
@@ -887,6 +942,10 @@ internal sealed class SearchBox
         if (_input.Text.Length > 0)
         {
             ClearQuery();
+            if (SearchConfig.Current.TypeToSearch)
+            {
+                _input.ReleaseFocus();
+            }
         }
         else
         {
@@ -934,13 +993,7 @@ internal sealed class SearchBox
 
     private void FocusBox()
     {
-        if (_input == null || _root == null || !_root.IsVisibleInTree())
-        {
-            return;
-        }
-
-        // A picker stops its grid scrolling while its confirm view covers the cards.
-        if (_grid != null && ScrollingEnabledField?.GetValue(_grid) is false)
+        if (!CanTakeFocus() || _input == null)
         {
             return;
         }
@@ -948,6 +1001,87 @@ internal sealed class SearchBox
         ScrollToTop();
         _input.GrabFocus();
         _input.SelectAll();
+    }
+
+    /// <summary>Hidden under a controller, or a picker's confirm view covering the cards: no.</summary>
+    private bool CanTakeFocus()
+    {
+        if (_input == null || _root == null || !_root.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        // A picker stops its grid scrolling while its confirm view covers the cards.
+        return _grid == null || ScrollingEnabledField?.GetValue(_grid) is not false;
+    }
+
+    /// <summary>
+    /// Type-to-search: a printable key the box did not get, because it is not focused, starts a
+    /// new search in the box on the screen in front. Returns false to leave the key to the game:
+    /// no box in front, a shortcut chord, space/Enter/Esc/arrows, or a dev-console key.
+    /// </summary>
+    public static bool TryTypeInto(InputEvent inputEvent)
+    {
+        if (!SearchConfig.Current.TypeToSearch
+            || inputEvent is not InputEventKey { Pressed: true, Echo: false } key
+            || key.Unicode <= ' '
+            || IsConsoleKey(key))
+        {
+            return false;
+        }
+
+        // Ctrl+C and friends are shortcuts, but AltGr (which Windows reports as Ctrl+Alt) types.
+        if ((key.CtrlPressed || key.MetaPressed) && !key.AltPressed)
+        {
+            return false;
+        }
+
+        foreach (KeyValuePair<Control, SearchBox> entry in Boxes)
+        {
+            if (entry.Value.IsCurrentScreen())
+            {
+                return entry.Value.StartTyping(char.ConvertFromUtf32((int)key.Unicode));
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The keys NDevConsole._Input opens and closes the console with, and the console itself.</summary>
+    private static bool IsConsoleKey(InputEventKey key)
+    {
+        if (key.Keycode is Key.Quoteleft or Key.Apostrophe or Key.Asterisk or Key.Asciicircum
+            || (key.ShiftPressed && key.Keycode == Key.Key8))
+        {
+            return true;
+        }
+
+        try
+        {
+            return NDevConsole.Instance.Visible;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Replaces any earlier search with the typed character, as Tom chose.</summary>
+    private bool StartTyping(string text)
+    {
+        if (!CanTakeFocus() || _input == null || _input.HasFocus())
+        {
+            return false;
+        }
+
+        ScrollToTop();
+        _input.GrabFocus();
+        // Setting Text in code does not raise TextChanged, so pass the change on ourselves.
+        _input.Text = text;
+        _input.CaretColumn = _input.Text.Length;
+        OnQueryChanged(_input.Text);
+        ApplyFocusState();
+        return true;
     }
 
     /// <summary>
@@ -1092,7 +1226,7 @@ internal sealed class SearchBox
             return;
         }
 
-        _emptyLabel.Visible = _query.Length > 0 && _shown == 0 && _total > 0;
+        _emptyLabel.Visible = !_query.IsEmpty && _shown == 0 && _total > 0;
     }
 
     /// <summary>

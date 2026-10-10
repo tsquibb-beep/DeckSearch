@@ -7,7 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 namespace DeckSearch;
 
 /// <summary>
-/// `dsearch diag` describes the latest Deck screen or card picker and where the box went; `dsearch test <query>`
+/// `dsearch diag` describes the latest Deck screen, card picker or pile and where the box went; `dsearch test <query>`
 /// scores your deck against a query; `dsearch reload` re-reads the config.
 ///
 /// The dev console discovers commands in loaded mods by reflection, so shipping this public
@@ -31,7 +31,7 @@ public class SearchConsoleCmd : AbstractConsoleCmd
             case "diag":
                 return SearchBox.Latest is { } box
                     ? new CmdResult(success: true, box.Diagnostics())
-                    : new CmdResult(success: false, "Open the Deck screen or a card picker first (it stays open behind the console).");
+                    : new CmdResult(success: false, "Open the Deck screen, a card picker or a combat pile first (it stays open behind the console).");
 
             case "test":
                 return Test(issuingPlayer, string.Join(" ", args.Skip(1)));
@@ -53,17 +53,17 @@ public class SearchConsoleCmd : AbstractConsoleCmd
             return new CmdResult(success: false, "Start a run first.");
         }
 
-        string normalized = FuzzyMatcher.Normalize(query);
+        FuzzyMatcher.Query parsed = FuzzyMatcher.Query.Parse(query);
         SearchConfig config = SearchConfig.Current;
         var scored = player.Deck.Cards
-            .Select(card => (card.Title, Score: FuzzyMatcher.Score(normalized, SearchBox.BuildTarget(card), config.SearchDescriptions)))
+            .Select(card => (card.Title, Score: FuzzyMatcher.Score(parsed, SearchBox.BuildTarget(card), config.SearchDescriptions)))
             .OrderByDescending(x => x.Score)
             .ThenBy(x => x.Title, StringComparer.Ordinal)
             .ToList();
 
         int shown = scored.Count(x => x.Score >= config.MinScore);
         var lines = scored.Take(30).Select(x => $"{(x.Score >= config.MinScore ? "+" : "-")} {x.Score,5:0}  {x.Title}");
-        return new CmdResult(success: true, $"'{normalized}': {shown}/{scored.Count} shown (minScore {config.MinScore})\n" + string.Join("\n", lines));
+        return new CmdResult(success: true, $"'{parsed}': {shown}/{scored.Count} shown (minScore {config.MinScore})\n" + string.Join("\n", lines));
     }
 
     public override CompletionResult GetArgumentCompletions(Player? player, string[] args)
