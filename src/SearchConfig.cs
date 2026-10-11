@@ -31,8 +31,9 @@ internal sealed class SearchConfig
     public int DebounceMs { get; set; } = 200;
 
     /// <summary>
-    /// Also put a sort bar and search box on the screens that pick cards from the deck: upgrade,
-    /// remove, transform and enchant.
+    /// Also put a sort bar and search box on the screens that pick cards: from the deck (upgrade,
+    /// remove, transform, enchant), from offered cards (Sealed Deck, some events and relics), and
+    /// from a combat pile (Secret Technique, Headbutt...).
     /// </summary>
     [JsonPropertyName("pickScreens")]
     public bool PickScreens { get; set; } = true;

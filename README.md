@@ -1,7 +1,8 @@
 # DeckSearch
 
 A Slay the Spire 2 mod that adds a search box to the **Deck** screen, to the screens where you
-pick cards from your deck, and to your draw, discard and exhaust piles in combat. Some daily modifiers leave you with a huge deck. Type part of a card's
+pick cards (from your deck, from offered cards like Sealed Deck, or from a combat pile), and to
+your draw, discard and exhaust piles in combat. Some daily modifiers leave you with a huge deck. Type part of a card's
 name and only the matching cards stay on screen.
 
 The box sits on the sort bar next to the sort buttons and matches their style. It takes on your
@@ -22,7 +23,9 @@ character's colour.
   Clicking a card and paging through the inspect view stays within the results.
 - **Card pickers too:** the screens that ask you to upgrade, remove, transform or enchant cards
   from your deck (campfire, events, relics) get the same bar: sort buttons and the search box.
-  Cards you have already picked stay picked while you search or sort.
+  Cards you have already picked stay picked while you search or sort. So do the screens that
+  offer you cards to choose from (Sealed Deck's 10 of 30, Room Full of Cheese, Sea Glass...) and
+  the ones that pick from a combat pile (Secret Technique, Headbutt, Liquid Memories...).
 - **Combat piles too:** the draw, discard and exhaust piles get the bar as well. Search finds
   what a card has gained in combat, such as Replay from Hidden Gem. The draw pile still never
   shows the order you will draw in.

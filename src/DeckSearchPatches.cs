@@ -32,8 +32,10 @@ internal static class DeckViewReadyPatch
 }
 
 /// <summary>
-/// Adds the sort bar and search box to the pickers that choose cards from the deck. Upgrade covers
-/// the campfire Smith, events and relics like Pomander; the plain one covers removing cards.
+/// Adds the sort bar and search box to the pickers. The deck ones: upgrade covers the campfire
+/// Smith, events and relics like Pomander; the plain one covers removing cards. The simple one
+/// picks from offered cards (Sealed Deck, Room Full of Cheese, Sea Glass...), and the combat-pile
+/// one picks from the draw, discard or exhaust pile (Secret Technique, Headbutt, Liquid Memories...).
 /// Each overrides _Ready, so each is patched.
 /// </summary>
 [HarmonyPatch]
@@ -45,6 +47,8 @@ internal static class PickerReadyPatch
         typeof(NDeckCardSelectScreen),
         typeof(NDeckTransformSelectScreen),
         typeof(NDeckEnchantSelectScreen),
+        typeof(NSimpleCardSelectScreen),
+        typeof(NCombatPileCardSelectScreen),
     }.Select(type => (MethodBase)AccessTools.Method(type, "_Ready"));
 
     private static void Postfix(NCardGridSelectionScreen __instance)
@@ -142,10 +146,11 @@ internal static class ContentsChangedPatch
     {
         AccessTools.Method(typeof(NDeckViewScreen), "OnPileContentsChanged"),
         AccessTools.Method(typeof(NCardPileScreen), "OnPileContentsChanged"),
+        AccessTools.Method(typeof(NCombatPileCardSelectScreen), "UpdatePileContents"),
     }.Where(method => method != null);
 
     private static void Prefix(Control __instance)
     {
-        SearchBox.For(__instance)?.InvalidateCache();
+        SearchBox.For(__instance)?.OnContentsChanged();
     }
 }

@@ -24,8 +24,8 @@ using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 namespace DeckSearch;
 
 /// <summary>
-/// The search box on one Deck screen, deck card picker (upgrade, remove, transform, enchant) or
-/// combat pile (draw, discard, exhaust), and the filter it applies. A plain C# object rather than a Godot node subclass: the Godot
+/// The search box on one Deck screen, card picker (upgrade, remove, transform, enchant, Sealed
+/// Deck, picks from a combat pile) or combat pile (draw, discard, exhaust), and the filter it applies. A plain C# object rather than a Godot node subclass: the Godot
 /// source generators do not run over mod assemblies, so a subclass would never get its
 /// callbacks. It lives exactly as long as its screen.
 /// </summary>
@@ -38,6 +38,10 @@ internal sealed class SearchBox
     private static readonly FieldInfo? PickerCardsField = AccessTools.Field(typeof(NCardGridSelectionScreen), "_cards");
 
     private static readonly MethodInfo? PileContentsChangedMethod = AccessTools.Method(typeof(NCardPileScreen), "OnPileContentsChanged");
+
+    private static readonly MethodInfo? PileSelectUpdateMethod = AccessTools.Method(typeof(NCombatPileCardSelectScreen), "UpdatePileContents");
+
+    private static readonly FieldInfo? PileSelectPileField = AccessTools.Field(typeof(NCombatPileCardSelectScreen), "_pile");
 
     private static readonly FieldInfo? HighlightedCardsField = AccessTools.Field(typeof(NCardGrid), "_highlightedCards");
 
@@ -73,8 +77,15 @@ internal sealed class SearchBox
     private enum ScreenKind
     {
         Deck,
+
+        /// <summary>Picks from a fixed set of cards: the deck pickers, Sealed Deck and the like.</summary>
         Picker,
+
+        /// <summary>The draw, discard and exhaust pile screens.</summary>
         Pile,
+
+        /// <summary>Picks a card from a combat pile (Secret Technique, Headbutt...), redrawn by the game.</summary>
+        PileSelect,
     }
 
     private readonly ScreenKind _kind;
@@ -168,7 +179,7 @@ internal sealed class SearchBox
     {
         if (SearchConfig.Current.PickScreens)
         {
-            Attach(screen, ScreenKind.Picker);
+            Attach(screen, screen is NCombatPileCardSelectScreen ? ScreenKind.PileSelect : ScreenKind.Picker);
         }
     }
 
@@ -204,9 +215,10 @@ internal sealed class SearchBox
 
             box._pickerCards = cards;
         }
-        else if (kind == ScreenKind.Pile && PileContentsChangedMethod == null)
+        else if ((kind == ScreenKind.Pile && PileContentsChangedMethod == null)
+            || (kind == ScreenKind.PileSelect && PileSelectUpdateMethod == null))
         {
-            Log.Warn("[DeckSearch] NCardPileScreen.OnPileContentsChanged is gone (game changed?), no search box.");
+            Log.Warn($"[DeckSearch] {screen.GetType().Name} has no redraw method (game changed?), no search box.");
             return;
         }
 
@@ -236,12 +248,67 @@ internal sealed class SearchBox
 
     public void InvalidateCache() => _targets.Clear();
 
+    /// <summary>True while our own redraw runs, which calls the game's contents-changed method.</summary>
+    private bool _redrawing;
+
+    /// <summary>The cards may have changed (upgraded, enchanted, Replay gained), unless we are only re-filtering.</summary>
+    public void OnContentsChanged()
+    {
+        if (!_redrawing)
+        {
+            InvalidateCache();
+        }
+    }
+
     /// <summary>
-    /// The sort order the grid should use: ours where we run the sort bar. A combat pile redraws
-    /// itself whenever its cards change, always asking for pile order, so this keeps the
-    /// player's choice through a draw or a discard.
+    /// The sort order the grid should use: ours where we run the sort bar. Piles redraw themselves
+    /// whenever their cards change, so this keeps the player's choice through a draw or a discard.
+    /// "Obtained" stands for the order the game asked for. That is list order almost everywhere,
+    /// but a pick from the draw pile asks for rarity then name, which hides the draw order; list
+    /// order there would give it away.
     /// </summary>
-    public List<SortingOrders> SortingFor(List<SortingOrders> requested) => OwnsSortBar ? _sorting : requested;
+    public List<SortingOrders> SortingFor(List<SortingOrders> requested)
+    {
+        if (!OwnsSortBar
+            || ReferenceEquals(requested, _sorting)
+            || requested.All(order => order is SortingOrders.Ascending or SortingOrders.Descending))
+        {
+            return OwnsSortBar ? _sorting : requested;
+        }
+
+        var result = new List<SortingOrders>();
+        foreach (SortingOrders order in _sorting)
+        {
+            switch (order)
+            {
+                case SortingOrders.Ascending:
+                    result.AddRange(requested);
+                    break;
+                case SortingOrders.Descending:
+                    result.AddRange(requested.Select(Reversed));
+                    break;
+                default:
+                    result.Add(order);
+                    break;
+            }
+        }
+
+        return result.Distinct().ToList();
+    }
+
+    private static SortingOrders Reversed(SortingOrders order) => order switch
+    {
+        SortingOrders.RarityAscending => SortingOrders.RarityDescending,
+        SortingOrders.CostAscending => SortingOrders.CostDescending,
+        SortingOrders.TypeAscending => SortingOrders.TypeDescending,
+        SortingOrders.AlphabetAscending => SortingOrders.AlphabetDescending,
+        SortingOrders.RarityDescending => SortingOrders.RarityAscending,
+        SortingOrders.CostDescending => SortingOrders.CostAscending,
+        SortingOrders.TypeDescending => SortingOrders.TypeAscending,
+        SortingOrders.AlphabetDescending => SortingOrders.AlphabetAscending,
+        SortingOrders.Ascending => SortingOrders.Descending,
+        _ => SortingOrders.Ascending,
+    };
 
     private double Score(CardModel card)
     {
@@ -346,6 +413,7 @@ internal sealed class SearchBox
     /// </summary>
     private void Redraw()
     {
+        _redrawing = true;
         try
         {
             switch (_kind)
@@ -360,6 +428,13 @@ internal sealed class SearchBox
                     PileContentsChangedMethod?.Invoke(_screen, null);
                     break;
 
+                case ScreenKind.PileSelect:
+                    // The game's own redraw: it keeps the draw pile's order hidden, re-shows the
+                    // picked cards, and closes the screen if nothing is left to pick.
+                    PileSelectUpdateMethod?.Invoke(_screen, null);
+                    DedupeHighlights();
+                    break;
+
                 case ScreenKind.Picker when _grid != null && GodotObject.IsInstanceValid(_grid):
                     _grid.SetCards(_pickerCards, PileType.None, _sorting);
                     RestoreHighlights();
@@ -369,6 +444,10 @@ internal sealed class SearchBox
         catch (Exception ex)
         {
             Log.Error($"[DeckSearch] Could not redraw the cards: {ex}");
+        }
+        finally
+        {
+            _redrawing = false;
         }
     }
 
@@ -386,6 +465,26 @@ internal sealed class SearchBox
         foreach (CardModel card in picked)
         {
             _grid.GetCardNode(card)?.CardHighlight.AnimShow();
+        }
+    }
+
+    /// <summary>
+    /// The pile picker re-highlights its picked cards on every redraw, and the grid's list of them
+    /// is never cleared, so each search would add duplicates. Un-picking removes only one copy,
+    /// and the card would glow again once scrolled. Keep one of each.
+    /// </summary>
+    private void DedupeHighlights()
+    {
+        if (_grid == null || HighlightedCardsField?.GetValue(_grid) is not List<CardModel> picked)
+        {
+            return;
+        }
+
+        List<CardModel> unique = picked.Distinct(ReferenceEqualityComparer.Instance).Cast<CardModel>().ToList();
+        if (unique.Count != picked.Count)
+        {
+            picked.Clear();
+            picked.AddRange(unique);
         }
     }
 
@@ -582,7 +681,12 @@ internal sealed class SearchBox
     {
         try
         {
-            IEnumerable<CardModel> cards = _screen is NCardPileScreen pile ? pile.Pile.Cards : _pickerCards;
+            IEnumerable<CardModel> cards = _screen switch
+            {
+                NCardPileScreen pile => pile.Pile.Cards,
+                NCombatPileCardSelectScreen when PileSelectPileField?.GetValue(_screen) is CardPile pile => pile.Cards,
+                _ => _pickerCards,
+            };
             return cards.FirstOrDefault()?.Owner?.Character.CardPool.FrameMaterial as ShaderMaterial;
         }
         catch (Exception ex)

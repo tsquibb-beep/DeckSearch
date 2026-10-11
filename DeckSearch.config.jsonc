@@ -19,8 +19,9 @@
     // Pause after your last keystroke before the cards re-arrange, in milliseconds.
     "debounceMs": 200,
 
-    // Also add the sort bar and search box to the screens that pick cards from your deck:
-    // upgrade (campfire, events, relics), remove, transform and enchant.
+    // Also add the sort bar and search box to the screens where you pick cards: from your deck
+    // (upgrade, remove, transform, enchant), from offered cards (Sealed Deck, some events and
+    // relics), and from a combat pile (Secret Technique, Headbutt, Liquid Memories...).
     "pickScreens": true,
 
     // Also add the sort bar and search box to the draw, discard and exhaust piles in combat.
