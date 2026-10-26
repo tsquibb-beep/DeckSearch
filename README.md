@@ -19,6 +19,14 @@ character's colour.
   text. `#attack` shows your Attacks but not a Skill that mentions attacks. `#skill #rare`,
   `#attack strike` and a part-typed `#att` all work. `#upgraded` (or just `#up`) shows your
   upgraded cards.
+- **Energy cost:** `#1` shows the cards that cost 1, `#x` the X-cost cards. `>1`, `<2`, `>=1` and
+  `<=2` compare: `>1` shows the cards that cost 2 or more. The cost is the one on the card, so in
+  combat a card made free this turn counts as 0. Unplayable cards have no cost and never match.
+- **Star cost (the Regent):** the same with a `*` after the number: `#2*`, `#x*`, `>1*`, `<=2*`.
+  `#*` shows every card with a star cost. All of these combine: `#1 #2* #attack`.
+- **View Upgrades:** with the game's "View Upgrades" box ticked, the search looks at the upgraded
+  cards you see. If a card gains Innate when upgraded, `innate` finds it only while the box is
+  ticked. Its cost after upgrading counts too.
 - **Keeps your sort:** the Obtained / Type / Cost / A-Z buttons work as normal on the results.
   Clicking a card and paging through the inspect view stays within the results.
 - **Card pickers too:** the screens that ask you to upgrade, remove, transform or enchant cards

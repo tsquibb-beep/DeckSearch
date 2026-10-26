@@ -14,6 +14,7 @@
     // words in the card text 50, typos in the card text 20-35. Raise to be stricter.
     // Start a word with # to match only the card type or rarity: #attack, #skill #rare.
     // #upgraded (or #up) shows upgraded cards.
+    // Costs: #1 (costs 1), #x (X cost), >1, <2, >=1, <=2. Star costs add a *: #2*, #x*, >1*, and #* is any star cost.
     "minScore": 30,
 
     // Pause after your last keystroke before the cards re-arrange, in milliseconds.

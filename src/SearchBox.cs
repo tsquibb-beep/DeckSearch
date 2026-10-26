@@ -109,6 +109,12 @@ internal sealed class SearchBox
 
     private readonly Dictionary<CardModel, FuzzyMatcher.Target> _targets = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The upgraded version of each card, searched while "View Upgrades" is ticked.</summary>
+    private readonly Dictionary<CardModel, FuzzyMatcher.Target> _upgradeTargets = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Whether the last filter searched the upgraded versions.</summary>
+    private bool _showingUpgrades;
+
     private Control? _root;
 
     private LineEdit? _input;
@@ -229,9 +235,10 @@ internal sealed class SearchBox
 
     // ---------------------------------------------------------------- filtering
 
-    public IReadOnlyList<CardModel> Filter(IReadOnlyList<CardModel> cards)
+    public IReadOnlyList<CardModel> Filter(IReadOnlyList<CardModel> cards, bool showingUpgrades)
     {
         _total = cards.Count;
+        _showingUpgrades = showingUpgrades;
         if (_query.IsEmpty)
         {
             _shown = cards.Count;
@@ -240,13 +247,31 @@ internal sealed class SearchBox
         }
 
         double minScore = SearchConfig.Current.MinScore;
-        List<CardModel> matches = cards.Where(c => Score(c) >= minScore).ToList();
+        List<CardModel> matches = cards.Where(c => Score(c, showingUpgrades) >= minScore).ToList();
         _shown = matches.Count;
         UpdateEmptyLabel();
         return matches;
     }
 
-    public void InvalidateCache() => _targets.Clear();
+    public void InvalidateCache()
+    {
+        _targets.Clear();
+        _upgradeTargets.Clear();
+    }
+
+    /// <summary>
+    /// "View Upgrades" was ticked or unticked: search the cards as they now look. The grid has
+    /// already swapped its cards, and our redraw keeps the new setting.
+    /// </summary>
+    public void OnUpgradePreviewChanged(bool showingUpgrades)
+    {
+        if (showingUpgrades != _showingUpgrades && !_redrawing && !_query.IsEmpty)
+        {
+            Redraw();
+        }
+
+        _showingUpgrades = showingUpgrades;
+    }
 
     /// <summary>True while our own redraw runs, which calls the game's contents-changed method.</summary>
     private bool _redrawing;
@@ -310,12 +335,15 @@ internal sealed class SearchBox
         _ => SortingOrders.Ascending,
     };
 
-    private double Score(CardModel card)
+    private double Score(CardModel card, bool showingUpgrades)
     {
-        if (!_targets.TryGetValue(card, out FuzzyMatcher.Target? target))
+        // The grid previews only the cards that can still be upgraded; the rest show as they are.
+        bool upgraded = showingUpgrades && card.IsUpgradable;
+        Dictionary<CardModel, FuzzyMatcher.Target> cache = upgraded ? _upgradeTargets : _targets;
+        if (!cache.TryGetValue(card, out FuzzyMatcher.Target? target))
         {
-            target = BuildTarget(card);
-            _targets[card] = target;
+            target = upgraded ? BuildUpgradedTarget(card) : BuildTarget(card);
+            cache[card] = target;
         }
 
         return FuzzyMatcher.Score(_query, target, SearchConfig.Current.SearchDescriptions);
@@ -334,7 +362,55 @@ internal sealed class SearchBox
             Log.Warn($"[DeckSearch] No description for {card.Id}: {ex.Message}");
         }
 
-        return new FuzzyMatcher.Target(card.Title, description, Tags(card), MarkedTags(card));
+        return new FuzzyMatcher.Target(card.Title, description, Tags(card), MarkedTags(card), EnergyCost(card), StarCost(card));
+    }
+
+    /// <summary>
+    /// The card as the "View Upgrades" preview shows it. The grid makes its preview the same way:
+    /// an upgraded copy, so the card in the deck is never touched.
+    /// </summary>
+    private static FuzzyMatcher.Target BuildUpgradedTarget(CardModel card)
+    {
+        try
+        {
+            var preview = (CardModel)card.MutableClone();
+            preview.UpgradeInternal();
+            return BuildTarget(preview);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] No upgrade preview for {card.Id}: {ex.Message}");
+            return BuildTarget(card);
+        }
+    }
+
+    /// <summary>The number on the card face (NCard.UpdateEnergyCostVisuals); none for an unplayable card.</summary>
+    private static FuzzyMatcher.Cost EnergyCost(CardModel card)
+    {
+        try
+        {
+            CardEnergyCost cost = card.EnergyCost;
+            return cost.CostsX ? FuzzyMatcher.Cost.X : FuzzyMatcher.Cost.Of(cost.GetWithModifiers(CostModifiers.All));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] No energy cost for {card.Id}: {ex.Message}");
+            return FuzzyMatcher.Cost.None;
+        }
+    }
+
+    /// <summary>The Regent's star cost as the card face shows it (NCard.UpdateStarCostVisuals); most cards have none.</summary>
+    private static FuzzyMatcher.Cost StarCost(CardModel card)
+    {
+        try
+        {
+            return card.HasStarCostX ? FuzzyMatcher.Cost.X : FuzzyMatcher.Cost.Of(card.GetStarCostWithModifiers());
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DeckSearch] No star cost for {card.Id}: {ex.Message}");
+            return FuzzyMatcher.Cost.None;
+        }
     }
 
     /// <summary>Tags found only with '#': "#upgraded" (or "#up") for upgraded cards.</summary>

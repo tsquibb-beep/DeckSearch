@@ -124,13 +124,36 @@ internal static class GridSetCardsPatch
         {
             if (__instance.GetParent() is Control screen && SearchBox.For(screen) is { } box)
             {
-                cardsToDisplay = box.Filter(cardsToDisplay);
+                cardsToDisplay = box.Filter(cardsToDisplay, __instance.IsShowingUpgrades);
                 sortingPriority = box.SortingFor(sortingPriority);
             }
         }
         catch (Exception ex)
         {
             Log.Error($"[DeckSearch] Filtering failed, showing the whole deck: {ex}");
+        }
+    }
+}
+
+/// <summary>
+/// "View Upgrades" (Deck screen, upgrade and transform pickers) swaps each card for its upgraded
+/// version, so a search re-runs against what is now on screen.
+/// </summary>
+[HarmonyPatch(typeof(NCardGrid), nameof(NCardGrid.IsShowingUpgrades), MethodType.Setter)]
+internal static class UpgradePreviewPatch
+{
+    private static void Postfix(NCardGrid __instance, bool value)
+    {
+        try
+        {
+            if (__instance.GetParent() is Control screen && SearchBox.For(screen) is { } box)
+            {
+                box.OnUpgradePreviewChanged(value);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[DeckSearch] Could not re-search the upgrade preview: {ex}");
         }
     }
 }
