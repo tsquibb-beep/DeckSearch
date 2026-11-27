@@ -3,10 +3,10 @@
     "name": "DeckSearch",
     "author": "Tomasapan",
     "description": "Adds a fuzzy search box to the Deck screen, so you can find cards in huge decks. Tolerates typos and also matches card text, type and rarity. Purely visual, so it is safe in co-op.",
-    "version": "0.6.0",
+    "version": "0.6.1",
     "has_pck": false,
     "has_dll": true,
     "dependencies": [],
     "affects_gameplay": false,
-    "min_game_version": "0.107.1"
+    "min_game_version": "0.111.1"
 }

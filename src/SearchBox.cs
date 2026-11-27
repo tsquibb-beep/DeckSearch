@@ -1412,6 +1412,8 @@ internal sealed class SearchBox
     /// <summary>
     /// Controller play hides the box, as the game hides its upgrades tickbox: it cannot be reached
     /// with a pad, and a hidden query would leave cards filtered with no way to see why.
+    /// Keyboard-only mode (added in 0.111) counts too: the game drives it with focus navigation, as
+    /// with a pad, and the arrow keys would fight the box.
     /// </summary>
     private void WatchController()
     {
@@ -1438,7 +1440,7 @@ internal sealed class SearchBox
             return;
         }
 
-        bool usingController = NControllerManager.Instance?.IsUsingController ?? false;
+        bool usingController = NControllerManager.Instance?.IsUsingDirectionalNavigation ?? false;
         _root.Visible = !usingController;
         if (usingController && _input != null && _input.Text.Length > 0)
         {
